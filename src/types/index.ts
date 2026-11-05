@@ -76,6 +76,8 @@ export interface PrescriptionResult {
   dietaryAdvice: string;
   dietaryAdviceTe?: string;
   summaryTe: string;
+  summaryEn?: string;
+  has503Warning?: boolean;
   prescriptionImageUri?: string;
 }
 

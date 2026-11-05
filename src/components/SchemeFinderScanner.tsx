@@ -20,6 +20,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
 }) => {
   const [activeMode, setActiveMode] = useState<'ocr' | 'manual'>('ocr');
   const [isScanning, setIsScanning] = useState(false);
+  const [scanStatusMessage, setScanStatusMessage] = useState<string>('');
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   
   // Dynamic scanned profile state (starts null so NO static name is shown until actually scanned)
@@ -86,15 +87,40 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
     reader.readAsDataURL(file);
   };
 
-  // Trigger Gemini API dynamic analysis
+  // Trigger Gemini API dynamic analysis with fast OCR and instant preset handling
   const triggerAadhaarScan = async (base64Img?: string, mimeType?: string, fileName?: string) => {
+    if (isScanning) return;
+
+    const imgToUse = base64Img || uploadedImagePreview || '';
+    const nameToUse = fileName || uploadedFileName;
+
+    // Fast-path: If user clicked a preset and has no uploaded image, calculate in 0ms
+    if (!imgToUse && selectedPresetId) {
+      const preset = PRESET_AADHAAR_SAMPLES.find(p => p.id === selectedPresetId);
+      if (preset) {
+        handleSelectPreset(preset);
+        return;
+      }
+    }
+
+    if (!imgToUse && !selectedPresetId) return;
+
     setIsScanning(true);
+    setScanStatusMessage(language === 'te' ? 'ఆధార్ ఫోటోను వేగవంతం చేస్తోంది...' : 'Optimizing Aadhaar photo for fast AI OCR...');
+
+    // 12-second safety timeout so the citizen is NEVER left waiting indefinitely
+    const safetyTimer = setTimeout(() => {
+      setIsScanning(false);
+      setScanStatusMessage('');
+    }, 12000);
 
     try {
-      const imgToUse = base64Img || uploadedImagePreview || '';
-      const nameToUse = fileName || uploadedFileName;
+      setScanStatusMessage(language === 'te' ? 'జెమిని AI రోగి పేరు & వివరాలు గుర్తిస్తోంది...' : 'Gemini AI reading patient name & age...');
+
       const result = await analyzeAadhaarWithGemini(imgToUse, mimeType || 'image/jpeg', nameToUse);
-      
+
+      setScanStatusMessage(language === 'te' ? 'వైఎస్సార్ ఆరోగ్యశ్రీ పథకాలు లెక్కిస్తోంది...' : 'Evaluating Dr. YSR Aarogyasri schemes...');
+
       setCurrentProfile(result.profile);
       setSchemes(result.schemes);
 
@@ -105,7 +131,9 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
     } catch (err) {
       console.error('Scan error:', err);
     } finally {
+      clearTimeout(safetyTimer);
       setIsScanning(false);
+      setScanStatusMessage('');
     }
   };
 
@@ -324,7 +352,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                   {isScanning ? (
                     <>
                       <div className="w-6 h-6 border-3 border-white border-t-transparent rounded-full animate-spin" />
-                      <span>{language === 'te' ? 'జెమిని AI పేరును విశ్లేషిస్తోంది...' : 'Gemini AI Extracting Patient Name...'}</span>
+                      <span>{scanStatusMessage || (language === 'te' ? 'జెమిని AI పేరును విశ్లేషిస్తోంది...' : 'Gemini AI Extracting Patient Name...')}</span>
                     </>
                   ) : (
                     <>

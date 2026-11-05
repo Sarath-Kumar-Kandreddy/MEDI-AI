@@ -464,9 +464,19 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
             {analysisError && (
               <div className="mt-4 p-4 rounded-2xl bg-error-container text-on-error-container border border-error/30 flex items-start gap-3 text-sm animate-fade-in">
                 <AlertCircle className="w-5 h-5 text-error shrink-0 mt-0.5" />
-                <div className="space-y-1">
+                <div className="space-y-1.5 flex-1">
                   <strong className="block font-bold">Analysis Notice</strong>
                   <p>{analysisError}</p>
+                  {analysisError.includes('503') || analysisError.includes('high demand') ? (
+                    <button
+                      type="button"
+                      onClick={() => triggerAnalysis()}
+                      className="mt-2 px-3 py-1.5 bg-primary text-white hover:bg-primary-dark rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>{language === 'te' ? 'స్టేబుల్ మోడల్‌తో మళ్లీ స్కాన్ చేయండి' : 'Retry AI Scan with Stable Gemini 1.5 Model'}</span>
+                    </button>
+                  ) : null}
                 </div>
               </div>
             )}
@@ -576,6 +586,31 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
           {/* Dynamic Recognized Medicines & Doctor Details */}
           {prescriptionData ? (
             <div className="space-y-6 animate-fade-in">
+              {/* High Demand 503 Notification Banner (if fallback was activated during Google traffic spike) */}
+              {prescriptionData.has503Warning && (
+                <div className="p-4 rounded-2xl bg-amber-50 border border-amber-300 text-amber-900 flex items-start gap-3 text-sm">
+                  <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1.5 flex-1">
+                    <strong className="block font-bold">
+                      {language === 'te' ? 'గూగుల్ సర్వర్ తాత్కాలిక రద్దీ (503)' : 'High Server Demand Notice (503)'}
+                    </strong>
+                    <p className="text-xs sm:text-sm">
+                      {language === 'te' && prescriptionData.summaryTe
+                        ? prescriptionData.summaryTe
+                        : prescriptionData.summaryEn || 'Google Gemini AI servers are momentarily experiencing high traffic spikes. Essential clinical medications with live Tata 1mg, Apollo & Jan Aushadhi generic links have been loaded.'}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => triggerAnalysis()}
+                      className="mt-1 px-3 py-1 bg-amber-200 hover:bg-amber-300 text-amber-900 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>{language === 'te' ? 'స్టేబుల్ మోడల్‌తో మళ్లీ స్కాన్ చేయండి' : 'Retry AI Scan with Stable Model'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Doctor Header & Diagnosis Result */}
               <div className="p-5 rounded-2xl bg-surface-container-low border border-secondary/30 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
