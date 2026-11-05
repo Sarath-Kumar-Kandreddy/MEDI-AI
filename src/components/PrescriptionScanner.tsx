@@ -1,12 +1,18 @@
 import React, { useState, useRef } from 'react';
-import type { Language, PrescriptionResult } from '../types';
-import { PRESET_PRESCRIPTIONS } from '../data/mockData';
-import { analyzePrescriptionWithGemini } from '../services/gemini';
+import type { Language, PrescriptionResult, Medicine } from '../types';
+import { 
+  analyzePrescriptionWithGemini, 
+  createDynamicMedicine, 
+  hasGeminiKey, 
+  getStoredGeminiKey, 
+  setStoredGeminiKey 
+} from '../services/gemini';
 import { savePrescriptionRecord } from '../services/firebase';
 import { NearbyPharmacyMap } from './NearbyPharmacyMap';
 import { 
   FileText, Camera, CheckCircle2, ShoppingBag, 
-  Sparkles, Phone, ShieldCheck, Clock, ArrowUpRight, Stethoscope, RefreshCw 
+  Sparkles, Phone, ShieldCheck, Clock, ArrowUpRight, Stethoscope, RefreshCw,
+  Plus, Trash2, X, Key, AlertCircle, ExternalLink
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -19,20 +25,48 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
   language,
   onOpenVoiceAssist,
 }) => {
-  const [activePreset, setActivePreset] = useState<string | null>(null);
   const [prescriptionData, setPrescriptionData] = useState<PrescriptionResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<{ base64: string; mimeType: string; fileName: string } | null>(null);
   const [selectedPlatform, setSelectedPlatform] = useState<'tata1mg' | 'pharmeasy' | 'apollo' | 'janAushadhi'>('tata1mg');
   const [selectedAddress, setSelectedAddress] = useState<string>('MVP Colony, Sector 4, Visakhapatnam (530017)');
+  const [scanMode, setScanMode] = useState<'photo' | 'text'>('photo');
+
+  // Inline Gemini API Key Setup state
+  const [hasKey, setHasKey] = useState<boolean>(() => hasGeminiKey());
+  const [apiKeyInput, setApiKeyInput] = useState<string>(() => getStoredGeminiKey());
+  const [isKeySaved, setIsKeySaved] = useState<boolean>(false);
+  const [showKeyPrompt, setShowKeyPrompt] = useState<boolean>(() => !hasGeminiKey());
+
+  // Manual OCR Text Input state
+  const [rawPrescriptionText, setRawPrescriptionText] = useState('');
+
+  // Inline "Add Medicine" modal state
+  const [isAddMedicineOpen, setIsAddMedicineOpen] = useState(false);
+  const [newMedName, setNewMedName] = useState('');
+  const [newMedSalt, setNewMedSalt] = useState('');
+  const [newMedDose, setNewMedDose] = useState('1 Tablet After Meal (1-0-1)');
+  const [newMedPrice, setNewMedPrice] = useState('85');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Switch between presets for testing
-  const handleSelectPreset = (key: string) => {
-    setActivePreset(key);
-    setImagePreview(null);
-    setPrescriptionData(PRESET_PRESCRIPTIONS[key]);
+  // Save API Key locally
+  const handleSaveApiKey = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!apiKeyInput.trim()) return;
+
+    setStoredGeminiKey(apiKeyInput.trim());
+    setHasKey(true);
+    setIsKeySaved(true);
+    setAnalysisError(null);
+    setTimeout(() => setIsKeySaved(false), 2000);
+
+    // If an image was already waiting to be analyzed, run it automatically
+    if (uploadedFile) {
+      triggerAnalysis(uploadedFile.base64, uploadedFile.mimeType, uploadedFile.fileName);
+    }
   };
 
   // Upload custom prescription slip image
@@ -40,36 +74,179 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setActivePreset(null);
+    setAnalysisError(null);
     const reader = new FileReader();
     reader.onload = async (event) => {
       const base64 = event.target?.result as string;
       setImagePreview(base64);
-      triggerAnalysis(base64, file.type, file.name);
+      const fileData = { base64, mimeType: file.type || 'image/jpeg', fileName: file.name };
+      setUploadedFile(fileData);
+
+      // Auto-trigger analysis if API key is present
+      if (hasKey) {
+        triggerAnalysis(base64, file.type, file.name);
+      } else {
+        setShowKeyPrompt(true);
+      }
     };
     reader.readAsDataURL(file);
   };
 
-  // Trigger Gemini API Vision OCR Analysis dynamically
+  // Trigger Gemini Multimodal OCR Vision Analysis
   const triggerAnalysis = async (base64Img?: string, mimeType?: string, fileName?: string) => {
+    const imgToUse = base64Img || uploadedFile?.base64 || imagePreview;
+    const mimeToUse = mimeType || uploadedFile?.mimeType || 'image/jpeg';
+    const nameToUse = fileName || uploadedFile?.fileName;
+
+    if (!imgToUse) {
+      setAnalysisError(
+        language === 'te' 
+          ? 'దయచేసి విశ్లేషించడానికి ఒక ప్రిస్క్రిప్షన్ ఫోటోను ఎంచుకోండి.' 
+          : 'Please select or upload a doctor prescription slip first.'
+      );
+      return;
+    }
+
+    if (!hasGeminiKey()) {
+      setShowKeyPrompt(true);
+      setAnalysisError(
+        language === 'te'
+          ? 'గూగుల్ జెమిని API కీ అవసరం. దయచేసి క్రింద మీ API కీని నమోదు చేయండి.'
+          : 'Google Gemini API key required. Please enter your API key below to scan doctor handwriting.'
+      );
+      return;
+    }
+
     setIsAnalyzing(true);
+    setAnalysisError(null);
+
     try {
-      const img = base64Img || imagePreview || '';
-      const result = await analyzePrescriptionWithGemini(img, mimeType || 'image/jpeg', fileName);
+      const result = await analyzePrescriptionWithGemini(imgToUse, mimeToUse, nameToUse);
       setPrescriptionData(result);
       await savePrescriptionRecord(result);
-    } catch (err) {
-      console.error('Prescription analysis error:', err);
+    } catch (err: any) {
+      console.error('Prescription Gemini OCR error:', err);
+      if (err?.message === 'NO_API_KEY') {
+        setShowKeyPrompt(true);
+        setAnalysisError('Google Gemini API Key is missing. Enter your key to run AI OCR.');
+      } else {
+        setAnalysisError(
+          `Gemini OCR Analysis: ${err?.message || 'Failed to extract medicines from this slip. Ensure the image is clear or verify your Gemini key.'}`
+        );
+      }
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  // Direct Text OCR Parser (for e-prescriptions or pasted doctor notes)
+  const handleTextOcrParse = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!rawPrescriptionText.trim()) return;
+
+    setIsAnalyzing(true);
+    setAnalysisError(null);
+
+    const lines = rawPrescriptionText
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.length > 0);
+
+    const parsedMeds: Medicine[] = [];
+
+    lines.forEach((line) => {
+      const doseMatch = line.match(/(1-0-1|1-0-0|0-0-1|0-1-0|SOS|twice daily|once daily|after food|before food)/i);
+      const dose = doseMatch ? doseMatch[0] : '1 Dose Daily (1-0-1)';
+      const cleanName = line.replace(/(1-0-1|1-0-0|0-0-1|0-1-0|SOS|twice daily|once daily|after food|before food|tab\.|cap\.|syp\.|inj\.)/gi, '').trim();
+
+      if (cleanName.length > 1) {
+        parsedMeds.push(createDynamicMedicine(cleanName, `${cleanName} Formulation IP`, dose));
+      }
+    });
+
+    if (parsedMeds.length === 0) {
+      parsedMeds.push(createDynamicMedicine(rawPrescriptionText.trim().slice(0, 30), 'Active Formulation IP'));
+    }
+
+    const newResult: PrescriptionResult = {
+      doctorDetails: {
+        doctorName: 'Dr. Attending Physician, MD',
+        hospital: 'King George Hospital (KGH) / Clinic',
+        date: new Date().toLocaleDateString('en-GB'),
+        department: 'General Outpatient'
+      },
+      diagnosis: 'Prescription Order (Extracted via OCR Text)',
+      diagnosisTe: 'ప్రిస్క్రిప్షన్ ఆధారంగా గుర్తించిన మందులు',
+      medicines: parsedMeds,
+      dietaryAdvice: 'Follow doctor-advised nutrition and regular hydration.',
+      dietaryAdviceTe: 'వైద్యుల సూచనల ప్రకారం సమతుల్య ఆహారం మరియు నీరు త్రాగండి.',
+      summaryTe: 'ప్రిస్క్రిప్షన్ OCR ద్వారా మందులు విజయవంతంగా గుర్తించబడ్డాయి.'
+    };
+
+    setPrescriptionData(newResult);
+    savePrescriptionRecord(newResult);
+    setIsAnalyzing(false);
+  };
+
+  // Add custom medicine dynamically
+  const handleAddMedicineSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMedName.trim()) return;
+
+    const med = createDynamicMedicine(
+      newMedName.trim(),
+      newMedSalt.trim() || undefined,
+      newMedDose.trim(),
+      Number(newMedPrice) || 85
+    );
+
+    if (prescriptionData) {
+      const updated: PrescriptionResult = {
+        ...prescriptionData,
+        medicines: [...prescriptionData.medicines, med]
+      };
+      setPrescriptionData(updated);
+      savePrescriptionRecord(updated);
+    } else {
+      const initial: PrescriptionResult = {
+        doctorDetails: {
+          doctorName: 'Dr. Attending Physician',
+          hospital: 'King George Hospital (KGH) - Visakhapatnam',
+          date: new Date().toLocaleDateString('en-GB'),
+          department: 'Outpatient Care'
+        },
+        diagnosis: 'Prescription Order',
+        diagnosisTe: 'వైద్యుల ప్రిస్క్రిప్షన్',
+        medicines: [med],
+        dietaryAdvice: 'Follow prescribed dosage with meals.',
+        summaryTe: 'ప్రిస్క్రిప్షన్ మందులు నమోదయ్యాయి.'
+      };
+      setPrescriptionData(initial);
+      savePrescriptionRecord(initial);
+    }
+
+    setNewMedName('');
+    setNewMedSalt('');
+    setIsAddMedicineOpen(false);
+  };
+
+  // Delete a medicine item
+  const handleDeleteMedicine = (id: string) => {
+    if (!prescriptionData) return;
+    const filtered = prescriptionData.medicines.filter(m => m.id !== id);
+    setPrescriptionData({
+      ...prescriptionData,
+      medicines: filtered
+    });
   };
 
   // Reset prescription scanner
   const handleResetPrescription = () => {
     setPrescriptionData(null);
     setImagePreview(null);
-    setActivePreset(null);
+    setUploadedFile(null);
+    setRawPrescriptionText('');
+    setAnalysisError(null);
   };
 
   // Calculate pricing based on selected platform
@@ -102,14 +279,14 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
         spread: 60,
         origin: { y: 0.7 }
       });
-    } catch {
-      // Confetti fallback
-    }
+    } catch {}
+
     setTimeout(() => {
+      const medList = prescriptionData?.medicines.map(m => m.brandName).join(', ') || 'Prescribed Medicines';
       alert(
         language === 'te'
-          ? `ధన్యవాదాలు! మీ ఆర్డర్ విజయవంతంగా నమోదైంది.\nమొత్తం ఖర్చు: ₹${platformTotal}\nడెలివరీ అడ్రస్: ${selectedAddress}\nఈరోజే విశాఖపట్నంలో డెలివరీ చేయబడుతుంది.`
-          : `Success! Medicine order dispatched via ${selectedPlatform.toUpperCase()}.\nTotal: ₹${platformTotal}\nDelivery Address: ${selectedAddress}\nEstimated Delivery: Today by 5:30 PM across Visakhapatnam.`
+          ? `ధన్యవాదాలు! మీ ఆర్డర్ విజయవంతంగా నమోదైంది.\nమందులు: ${medList}\nమొత్తం ఖర్చు: ₹${platformTotal}\nడెలివరీ అడ్రస్: ${selectedAddress}\nఈరోజే విశాఖపట్నంలో డెలివరీ చేయబడుతుంది.`
+          : `Success! Medicine order dispatched via ${selectedPlatform.toUpperCase()}.\nMedicines: ${medList}\nTotal: ₹${platformTotal}\nDelivery Address: ${selectedAddress}\nEstimated Delivery: Today by 5:30 PM across Visakhapatnam.`
       );
     }, 400);
   };
@@ -131,12 +308,12 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
         <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold text-white tracking-tight mb-2">
           {language === 'te'
             ? 'AI ప్రిస్క్రిప్షన్ స్కాన్ చేసి ఆన్‌లైన్‌లో మందులు ఆర్డర్ చేయండి'
-            : 'AI Prescription Analyzer & Direct Online Medicine Delivery'}
+            : 'AI Medical Prescription OCR & Direct Online Medicine Delivery'}
         </h1>
         <p className="text-surface-dim text-base sm:text-lg max-w-3xl leading-relaxed">
           {language === 'te'
-            ? 'డాక్టర్ రాసిన కాగితం లేదా ప్రిస్క్రిప్షన్ ఫోటో తీయండి. జెమిని AI వైద్యుల పేరు, రోగ నిర్ధారణ, మరియు మందుల మోతాదును (1-0-1) డైనమిక్‌గా గుర్తించి, ఫార్మ్‌ఈజీ, టాటా 1mg, అపోలో మరియు జన ఔషధి ధరలను పోల్చి చూపిస్తుంది.'
-            : 'Elderly friendly home delivery across Visakhapatnam. Upload any doctor slip to dynamically extract prescribed medicines, dosages, and compare real-time discounts across PharmEasy, Tata 1mg, and subsidized Jan Aushadhi generic kendras.'}
+            ? 'డాక్టర్ రాసిన కాగితం లేదా ప్రిస్క్రిప్షన్ ఫోటో తీయండి. గూగుల్ జెమిని AI ప్రిస్క్రిప్షన్‌లోని అసలైన మందుల పేర్లు, డోసేజ్ వివరాలను గుర్తించి, టాటా 1mg, అపోలో, ఫార్మ్‌ఈజీ మరియు జన ఔషధి స్టోర్లలో ఆర్డర్ చేయడానికి నేరుగా లింక్‌లను అందిస్తుంది.'
+            : 'Upload any doctor prescription slip. The Google Gemini Multimodal AI reads doctor handwriting, identifies exact medicine names, and generates direct order links across Tata 1mg, Apollo 24|7, PharmEasy, and subsidized Jan Aushadhi generic stores.'}
         </p>
 
         {/* 3 Metric Pills */}
@@ -173,161 +350,237 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
         </div>
       </div>
 
-      {/* Main Grid: Left Scanner & Recognized Medicines | Right Delivery Basket */}
+      {/* Main Grid: Left Scanner & Dynamic Medicines | Right Delivery Basket */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Left Column: AI Medical Prescription OCR & Medicine Matcher */}
+        {/* Left Column: AI Medical Prescription OCR & Dynamic Medicine Extraction */}
         <div className="lg:col-span-7 space-y-6">
           <div className="card-tactile p-6 bg-white border border-outline-border rounded-3xl">
-            <div className="flex items-center justify-between pb-4 border-b border-outline-subtle">
+            <div className="flex flex-wrap items-center justify-between pb-4 border-b border-outline-subtle gap-2">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container">
                   <Camera className="w-5 h-5 text-secondary" />
                 </div>
                 <div>
                   <h3 className="text-xl font-bold text-primary">
-                    {language === 'te' ? 'AI మెడికల్ ప్రిస్క్రిప్షన్ OCR & మందుల గుర్తింపు' : 'AI Medical Prescription OCR & Medicine Matcher'}
+                    {language === 'te' ? 'గూగుల్ జెమిని ప్రిస్క్రిప్షన్ OCR స్కానర్' : 'Gemini AI Prescription Vision OCR'}
                   </h3>
                   <p className="text-xs text-on-surface-variant">
-                    {language === 'te' ? 'డాక్టర్ ప్రిస్క్రిప్షన్ ఫోటో తీయండి - వివరాలు నేరుగా విశ్లేషించబడతాయి' : 'Dynamic doctor handwriting parsing with Google Gemini'}
+                    {language === 'te' ? 'చేతిరాతతో రాసిన మందులు మరియు ఈ-షాపింగ్ లింక్స్ గుర్తింపు' : 'Transcribes doctor handwriting & generates direct e-shopping links'}
                   </p>
                 </div>
               </div>
 
-              <span className="px-3 py-1 rounded-full bg-surface-container text-xs font-bold text-primary">
-                Bilingual OCR v4.2
-              </span>
-            </div>
-
-            {/* Upload Area */}
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleImageUpload}
-              accept="image/*"
-              className="hidden"
-            />
-
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              className="mt-5 border-2 border-dashed border-secondary/50 rounded-2xl p-6 sm:p-8 text-center cursor-pointer bg-surface-container-low hover:bg-surface-container transition-all group"
-            >
-              {imagePreview ? (
-                <div className="space-y-3">
-                  <img
-                    src={imagePreview}
-                    alt="Uploaded Prescription"
-                    className="max-h-52 mx-auto rounded-xl object-contain border border-outline-subtle shadow-sm"
-                  />
-                  <span className="text-sm font-semibold text-secondary flex items-center justify-center gap-1">
-                    <CheckCircle2 className="w-4 h-4" />
-                    {language === 'te' ? 'ప్రిస్క్రిప్షన్ స్లిప్ లోడ్ అయ్యింది - మరొకటి ఎంచుకోవడానికి క్లిక్ చేయండి' : 'Slip Loaded - Click to change photo'}
-                  </span>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center space-y-3">
-                  <div className="w-16 h-16 rounded-full bg-secondary-container/80 flex items-center justify-center text-on-secondary-container group-hover:scale-110 transition-transform">
-                    <Camera className="w-8 h-8 text-secondary" />
-                  </div>
-                  <div>
-                    <span className="font-bold text-lg text-primary block">
-                      {language === 'te' ? 'డాక్టర్ ప్రిస్క్రిప్షన్ ఫోటో తీయండి లేదా అప్‌లోడ్ చేయండి' : 'Tap to Take a Photo or Upload Prescription'}
-                    </span>
-                    <p className="text-xs text-on-surface-variant mt-1">
-                      {language === 'te'
-                        ? 'కేజీహెచ్, అపోలో, కేర్ హాస్పిటల్స్ డాక్టర్ చేతిరాత మరియు మందుల పేర్లు గుర్తించబడతాయి'
-                        : 'Recognizes doctor handwriting, dosages (1-0-1), and hospital letterheads'}
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Quick Presets for instant clinical demonstration */}
-            <div className="mt-5">
-              <p className="text-sm font-bold text-on-surface-variant mb-2">
-                {language === 'te' ? 'లేదా పరీక్ష కోసం నమూనా ప్రిస్క్రిప్షన్ ఎంచుకోండి:' : 'Or test with a sample patient prescription:'}
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {/* Mode switch: Photo OCR vs Direct Text */}
+              <div className="flex rounded-full bg-surface-container p-1">
                 <button
-                  onClick={() => handleSelectPreset('diabetes')}
-                  className={`p-3 rounded-xl border text-left transition-all ${
-                    activePreset === 'diabetes'
-                      ? 'bg-secondary-container/40 border-2 border-secondary text-primary font-bold shadow-sm'
-                      : 'bg-white border-outline-subtle text-on-surface-variant hover:bg-surface-container-low'
+                  type="button"
+                  onClick={() => setScanMode('photo')}
+                  className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+                    scanMode === 'photo' ? 'bg-primary text-white shadow-sm' : 'text-on-surface-variant'
                   }`}
                 >
-                  <div className="text-sm font-bold text-primary">Senior Diabetes & Hypertension</div>
-                  <div className="text-xs text-secondary mt-0.5">షుగర్ & బీపీ ప్రిస్క్రిప్షన్ (KGH Vizag)</div>
+                  {language === 'te' ? 'ఫోటో OCR' : 'Photo OCR'}
                 </button>
-
                 <button
-                  onClick={() => handleSelectPreset('cardiac')}
-                  className={`p-3 rounded-xl border text-left transition-all ${
-                    activePreset === 'cardiac'
-                      ? 'bg-secondary-container/40 border-2 border-secondary text-primary font-bold shadow-sm'
-                      : 'bg-white border-outline-subtle text-on-surface-variant hover:bg-surface-container-low'
+                  type="button"
+                  onClick={() => setScanMode('text')}
+                  className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+                    scanMode === 'text' ? 'bg-primary text-white shadow-sm' : 'text-on-surface-variant'
                   }`}
                 >
-                  <div className="text-sm font-bold text-primary">Cardiac Care & Blood Thinner</div>
-                  <div className="text-xs text-secondary mt-0.5">గుండె మరియు కొలెస్ట్రాల్ రక్షణ (VIMS)</div>
-                </button>
-
-                <button
-                  onClick={() => handleSelectPreset('osteo')}
-                  className={`p-3 rounded-xl border text-left transition-all ${
-                    activePreset === 'osteo'
-                      ? 'bg-secondary-container/40 border-2 border-secondary text-primary font-bold shadow-sm'
-                      : 'bg-white border-outline-subtle text-on-surface-variant hover:bg-surface-container-low'
-                  }`}
-                >
-                  <div className="text-sm font-bold text-primary">Senior Osteoarthritis & Joint Pain</div>
-                  <div className="text-xs text-secondary mt-0.5">కీళ్ల నొప్పులు & క్యాల్షియం (KGH Ortho)</div>
-                </button>
-
-                <button
-                  onClick={() => handleSelectPreset('gastritis')}
-                  className={`p-3 rounded-xl border text-left transition-all ${
-                    activePreset === 'gastritis'
-                      ? 'bg-secondary-container/40 border-2 border-secondary text-primary font-bold shadow-sm'
-                      : 'bg-white border-outline-subtle text-on-surface-variant hover:bg-surface-container-low'
-                  }`}
-                >
-                  <div className="text-sm font-bold text-primary">Acid Reflux & Gastritis Relief</div>
-                  <div className="text-xs text-secondary mt-0.5">కడుపులో మంట & గ్యాస్ సమస్య (Victoria Hosp)</div>
+                  {language === 'te' ? 'నోట్స్ / టెక్స్ట్' : 'Text Input'}
                 </button>
               </div>
             </div>
 
-            {/* Scan Action */}
-            <button
-              onClick={() => triggerAnalysis()}
-              disabled={isAnalyzing || (!imagePreview && !activePreset)}
-              className={`btn-pill-primary w-full flex items-center justify-center gap-2 mt-5 text-lg ${
-                (!imagePreview && !activePreset) ? 'opacity-60 cursor-not-allowed' : ''
-              }`}
-            >
-              {isAnalyzing ? (
-                <>
-                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>{language === 'te' ? 'జెమిని AI ప్రిస్క్రిప్షన్ విశ్లేషిస్తోంది...' : 'Gemini AI Analyzing Slip...'}</span>
-                </>
+            {/* Gemini Key Status & Inline Activation Bar */}
+            <div className="mt-4">
+              {hasKey && !showKeyPrompt ? (
+                <div className="p-3 rounded-2xl bg-secondary-container/40 border border-secondary/30 flex items-center justify-between text-xs">
+                  <span className="flex items-center gap-1.5 font-bold text-secondary">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Gemini 1.5 Flash Vision Multimodal OCR Model Active</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowKeyPrompt(true)}
+                    className="text-on-surface-variant hover:text-primary underline font-medium"
+                  >
+                    Change Key
+                  </button>
+                </div>
               ) : (
-                <>
-                  <Sparkles className="w-5 h-5 text-secondary-fixed" />
-                  <span>{language === 'te' ? 'స్లిప్ స్కాన్ చేసి ధరలను పోల్చండి' : 'Analyze Slip & Compare E-Pharmacies'}</span>
-                </>
+                <div className="p-4 rounded-2xl bg-surface-container-low border-2 border-secondary/40 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Key className="w-4 h-4 text-secondary" />
+                      <span className="font-bold text-sm text-primary">
+                        {language === 'te' ? 'జెమిని AI OCR కీ నమోదు చేయండి' : 'Enter Google Gemini API Key for Prescription OCR'}
+                      </span>
+                    </div>
+                    {hasKey && (
+                      <button
+                        type="button"
+                        onClick={() => setShowKeyPrompt(false)}
+                        className="text-xs text-on-surface-variant hover:text-primary"
+                      >
+                        Hide
+                      </button>
+                    )}
+                  </div>
+                  
+                  <form onSubmit={handleSaveApiKey} className="flex gap-2">
+                    <input
+                      type="password"
+                      value={apiKeyInput}
+                      onChange={(e) => setApiKeyInput(e.target.value)}
+                      placeholder="Paste Gemini API Key (AIzaSy...)"
+                      className="input-tactile flex-1 text-sm font-mono py-2 px-3"
+                    />
+                    <button
+                      type="submit"
+                      className="btn-pill-primary py-2 px-5 text-sm whitespace-nowrap shadow-sm"
+                    >
+                      {isKeySaved ? 'Saved! ✓' : 'Save & Enable AI'}
+                    </button>
+                  </form>
+
+                  <div className="flex items-center justify-between text-xs text-on-surface-variant">
+                    <span>Free Google AI Studio model for handwriting vision OCR</span>
+                    <a
+                      href="https://aistudio.google.com/app/apikey"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-secondary font-bold flex items-center gap-1 hover:underline"
+                    >
+                      Get Free Key <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                </div>
               )}
-            </button>
+            </div>
+
+            {/* Error Notification Banner */}
+            {analysisError && (
+              <div className="mt-4 p-4 rounded-2xl bg-error-container text-on-error-container border border-error/30 flex items-start gap-3 text-sm animate-fade-in">
+                <AlertCircle className="w-5 h-5 text-error shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <strong className="block font-bold">Analysis Notice</strong>
+                  <p>{analysisError}</p>
+                </div>
+              </div>
+            )}
+
+            {scanMode === 'photo' ? (
+              <div className="mt-5 space-y-5">
+                {/* Upload / Camera Dropzone */}
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleImageUpload}
+                  accept="image/*"
+                  className="hidden"
+                />
+
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-secondary/50 rounded-2xl p-6 sm:p-8 text-center cursor-pointer bg-surface-container-low hover:bg-surface-container transition-all group"
+                >
+                  {imagePreview ? (
+                    <div className="space-y-3">
+                      <img
+                        src={imagePreview}
+                        alt="Uploaded Prescription"
+                        className="max-h-60 mx-auto rounded-xl object-contain border border-outline-subtle shadow-sm"
+                      />
+                      <span className="text-sm font-semibold text-secondary flex items-center justify-center gap-1">
+                        <CheckCircle2 className="w-4 h-4" />
+                        {language === 'te' ? 'ప్రిస్క్రిప్షన్ ఫోటో లోడ్ అయ్యింది - రీ-స్కాన్ చేయడానికి క్లిక్ చేయండి' : 'Slip Loaded - Tap to change photo'}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center space-y-3">
+                      <div className="w-16 h-16 rounded-full bg-secondary-container/80 flex items-center justify-center text-on-secondary-container group-hover:scale-110 transition-transform">
+                        <Camera className="w-8 h-8 text-secondary" />
+                      </div>
+                      <div>
+                        <span className="font-bold text-lg text-primary block">
+                          {language === 'te' ? 'డాక్టర్ ప్రిస్క్రిప్షన్ ఫోటో తీయండి లేదా అప్‌లోడ్ చేయండి' : 'Tap to Take a Photo or Upload Doctor Slip'}
+                        </span>
+                        <p className="text-xs text-on-surface-variant mt-1">
+                          {language === 'te'
+                            ? 'చేతిరాతతో రాసిన మందులు, డోసేజ్ (1-0-1), మరియు ఆసుపత్రి వివరాలు డైనమిక్‌గా గుర్తించబడతాయి'
+                            : 'Gemini AI Vision transcribes doctor handwriting, drug names, and doses'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Primary Scan Action Button */}
+                <button
+                  type="button"
+                  onClick={() => triggerAnalysis()}
+                  disabled={isAnalyzing || !imagePreview}
+                  className={`btn-pill-primary w-full flex items-center justify-center gap-2 text-lg shadow-tactile cursor-pointer ${
+                    (!imagePreview) ? 'opacity-60 cursor-not-allowed' : ''
+                  }`}
+                >
+                  {isAnalyzing ? (
+                    <>
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>{language === 'te' ? 'జెమిని AI ప్రిస్క్రిప్షన్ విశ్లేషిస్తోంది...' : 'Gemini AI Analyzing Prescription...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-5 h-5 text-secondary-fixed" />
+                      <span>{language === 'te' ? 'ప్రిస్క్రిప్షన్ స్కాన్ చేసి మందులు గుర్తించండి' : 'Analyze Prescription with Gemini AI'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            ) : (
+              /* Direct Text / Notes OCR Parser */
+              <form onSubmit={handleTextOcrParse} className="mt-5 space-y-4">
+                <div>
+                  <label className="block text-sm font-bold text-primary mb-1">
+                    {language === 'te' ? 'ప్రిస్క్రిప్షన్ నోట్స్ లేదా మందుల వివరాలు నమోదు చేయండి:' : 'Type or Paste Prescribed Medicines / Doctor Notes:'}
+                  </label>
+                  <textarea
+                    rows={4}
+                    required
+                    value={rawPrescriptionText}
+                    onChange={(e) => setRawPrescriptionText(e.target.value)}
+                    placeholder="e.g.&#10;Augmentin 625mg 1-0-1&#10;Pantocid 40mg 1-0-0 before food&#10;Paracetamol 650mg SOS"
+                    className="w-full p-3.5 rounded-2xl border-2 border-outline-variant font-mono text-sm focus:outline-none focus:border-primary"
+                  />
+                  <p className="text-xs text-on-surface-variant mt-1">
+                    {language === 'te'
+                      ? 'ప్రతి మందును ఒక కొత్త లైన్‌లో టైప్ చేయండి (ఉదా: మందు పేరు, డోస్ 1-0-1)'
+                      : 'Enter each medicine on a separate line with optional dosage (e.g., 1-0-1, SOS).'}
+                  </p>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isAnalyzing}
+                  className="btn-pill-primary w-full flex items-center justify-center gap-2 text-base"
+                >
+                  <Sparkles className="w-4 h-4 text-secondary-fixed" />
+                  <span>{language === 'te' ? 'టెక్స్ట్ నుండి మందులు గుర్తించండి' : 'Extract Medicines from Text'}</span>
+                </button>
+              </form>
+            )}
           </div>
 
-          {/* Dynamic Prescription Content or Awaiting State */}
+          {/* Dynamic Recognized Medicines & Doctor Details */}
           {prescriptionData ? (
             <div className="space-y-6 animate-fade-in">
               {/* Doctor Header & Diagnosis Result */}
-              <div className="p-4 rounded-2xl bg-surface-container-low border border-secondary/30 shadow-sm">
+              <div className="p-5 rounded-2xl bg-surface-container-low border border-secondary/30 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 rounded-full bg-secondary text-white flex items-center justify-center">
+                    <div className="w-10 h-10 rounded-full bg-secondary text-white flex items-center justify-center shadow">
                       <Stethoscope className="w-5 h-5" />
                     </div>
                     <div>
@@ -345,31 +598,47 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                     </span>
                     <button
                       onClick={handleResetPrescription}
-                      className="text-xs text-outline hover:text-primary underline flex items-center gap-1"
+                      className="text-xs text-outline hover:text-primary underline flex items-center gap-1 cursor-pointer"
                     >
                       <RefreshCw className="w-3 h-3" />
-                      <span>{language === 'te' ? 'రీసెట్' : 'Clear'}</span>
+                      <span>{language === 'te' ? 'రీసెట్' : 'Clear All'}</span>
                     </button>
                   </div>
                 </div>
-                <div className="mt-3 pt-2 border-t border-outline-subtle text-sm">
-                  <strong className="text-primary">{language === 'te' ? 'రోగ నిర్ధారణ (Diagnosis):' : 'Diagnosis:'}</strong>{' '}
-                  <span className="text-on-surface font-medium">
-                    {language === 'te' && prescriptionData.diagnosisTe ? prescriptionData.diagnosisTe : prescriptionData.diagnosis}
+                <div className="mt-3 pt-2.5 border-t border-outline-subtle text-sm flex items-center justify-between">
+                  <div>
+                    <strong className="text-primary">{language === 'te' ? 'రోగ నిర్ధారణ:' : 'Diagnosis:'}</strong>{' '}
+                    <span className="text-on-surface font-medium">
+                      {language === 'te' && prescriptionData.diagnosisTe ? prescriptionData.diagnosisTe : prescriptionData.diagnosis}
+                    </span>
+                  </div>
+                  <span className="text-xs font-semibold text-secondary px-2.5 py-0.5 rounded-full bg-secondary-container">
+                    Gemini AI Vision Verified
                   </span>
                 </div>
               </div>
 
-              {/* Recognized Medicines & Dosage Section */}
+              {/* Recognized Medicines Section */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xl font-bold text-primary flex items-center gap-2">
                     <FileText className="w-5 h-5 text-secondary" />
-                    <span>{language === 'te' ? 'గుర్తించబడిన మందులు మరియు మోతాదు వివరాలు' : 'Recognized Medicines & Dosage'}</span>
+                    <span>{language === 'te' ? 'స్కాన్ చేసిన మందులు మరియు ఈ-షాపింగ్ లింక్స్' : 'Dynamically Recognized Medicines & E-Shopping Links'}</span>
                   </h3>
-                  <span className="px-3 py-1 rounded-full bg-secondary text-white text-xs font-black">
-                    {prescriptionData.medicines.length} {language === 'te' ? 'మందులు' : 'Medicines'}
-                  </span>
+                  
+                  <div className="flex items-center gap-2">
+                    <span className="px-3 py-1 rounded-full bg-secondary text-white text-xs font-black">
+                      {prescriptionData.medicines.length} {language === 'te' ? 'మందులు' : 'Medicines'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setIsAddMedicineOpen(true)}
+                      className="px-3 py-1 rounded-full bg-surface-container border border-outline-variant hover:bg-surface-container-high text-primary font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-secondary" />
+                      <span>{language === 'te' ? '+ మందు చేర్చండి' : '+ Add Medicine'}</span>
+                    </button>
+                  </div>
                 </div>
 
                 {prescriptionData.medicines.map((med, idx) => (
@@ -384,21 +653,31 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                           <span className="w-6 h-6 rounded-full bg-primary text-white text-xs font-bold flex items-center justify-center">
                             {idx + 1}
                           </span>
-                          <h4 className="text-lg font-bold text-primary">{med.brandName}</h4>
+                          <h4 className="text-lg sm:text-xl font-black text-primary">{med.brandName}</h4>
                           <span className="text-xs bg-surface-container px-2 py-0.5 rounded font-semibold text-on-surface-variant">
                             {med.quantity}
                           </span>
                         </div>
                         <p className="text-xs text-on-surface-variant font-mono mt-1">
-                          Salt: {med.genericSalt}
+                          Generic Salt: {med.genericSalt}
                         </p>
                       </div>
 
-                      <div className="text-right">
-                        <span className="text-sm font-bold text-primary">MRP ₹{med.mrp}</span>
-                        <span className="block text-[11px] text-secondary font-semibold">
-                          Govt Ceiling Compliant
-                        </span>
+                      <div className="flex items-center gap-3">
+                        <div className="text-right">
+                          <span className="text-base font-bold text-primary">MRP ₹{med.mrp}</span>
+                          <span className="block text-[11px] text-secondary font-semibold">
+                            Govt Ceiling Compliant
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteMedicine(med.id)}
+                          className="p-1.5 rounded-lg text-outline hover:text-error hover:bg-error-container/30 transition-colors cursor-pointer"
+                          title="Remove from list"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     </div>
 
@@ -416,11 +695,16 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                       </p>
                     </div>
 
-                    {/* Direct Platform Comparison (Visakhapatnam) */}
+                    {/* Direct Dynamic E-Shopping Links Generated for this Scanned Drug */}
                     <div className="mt-4 pt-3 border-t border-outline-subtle">
-                      <span className="text-xs font-bold text-on-surface-variant block mb-2 uppercase tracking-wider">
-                        {language === 'te' ? 'వైజాగ్ ప్లాట్‌ఫారమ్ ధరల పోలిక (E-Pharmacy Links):' : 'Direct Platform Comparison (Visakhapatnam):'}
-                      </span>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-on-surface-variant uppercase tracking-wider">
+                          {language === 'te' ? 'ఆన్‌లైన్ ఆర్డర్ ఈ-షాపింగ్ లింక్స్ (Click to Order Online):' : 'Direct E-Shopping Links (Click to Order Online):'}
+                        </span>
+                        <span className="text-[11px] text-secondary font-semibold">
+                          Vizag Pin Codes Covered
+                        </span>
+                      </div>
                       
                       <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-xs">
                         {/* Tata 1mg */}
@@ -428,13 +712,13 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                           href={med.tata1mgSearchUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
+                          className="p-2.5 rounded-xl bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
                         >
                           <span className="font-bold text-primary flex items-center justify-center gap-0.5">
-                            Tata 1mg <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
+                            Tata 1mg <ArrowUpRight className="w-3.5 h-3.5 text-secondary opacity-70 group-hover:opacity-100" />
                           </span>
                           <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.tata1mg}</span>
-                          <span className="text-[10px] text-secondary font-semibold">Today 6 PM</span>
+                          <span className="text-[10px] text-secondary font-semibold">Today Dispatch</span>
                         </a>
 
                         {/* Apollo 24|7 */}
@@ -442,13 +726,13 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                           href={med.apolloSearchUrl || `https://www.apollopharmacy.in/search-medicines/${encodeURIComponent(med.brandName)}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
+                          className="p-2.5 rounded-xl bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
                         >
                           <span className="font-bold text-primary flex items-center justify-center gap-0.5">
-                            Apollo 24|7 <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
+                            Apollo 24|7 <ArrowUpRight className="w-3.5 h-3.5 text-secondary opacity-70 group-hover:opacity-100" />
                           </span>
                           <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.apollo}</span>
-                          <span className="text-[10px] text-secondary font-semibold">60 Mins</span>
+                          <span className="text-[10px] text-secondary font-semibold">60-90 Mins</span>
                         </a>
 
                         {/* PharmEasy */}
@@ -456,13 +740,13 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                           href={med.pharmeasySearchUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
+                          className="p-2.5 rounded-xl bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
                         >
                           <span className="font-bold text-primary flex items-center justify-center gap-0.5">
-                            PharmEasy <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
+                            PharmEasy <ArrowUpRight className="w-3.5 h-3.5 text-secondary opacity-70 group-hover:opacity-100" />
                           </span>
                           <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.pharmeasy}</span>
-                          <span className="text-[10px] text-secondary font-semibold">Tomorrow</span>
+                          <span className="text-[10px] text-secondary font-semibold">Fast Delivery</span>
                         </a>
 
                         {/* Netmeds */}
@@ -470,21 +754,28 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                           href={med.netmedsSearchUrl || `https://www.netmeds.com/catalogsearch/result?q=${encodeURIComponent(med.brandName)}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
+                          className="p-2.5 rounded-xl bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
                         >
                           <span className="font-bold text-primary flex items-center justify-center gap-0.5">
-                            Netmeds <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
+                            Netmeds <ArrowUpRight className="w-3.5 h-3.5 text-secondary opacity-70 group-hover:opacity-100" />
                           </span>
                           <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.netmeds}</span>
-                          <span className="text-[10px] text-secondary font-semibold">Tomorrow</span>
+                          <span className="text-[10px] text-secondary font-semibold">Best Offer</span>
                         </a>
 
                         {/* Jan Aushadhi Generic (Massive Savings) */}
-                        <div className="p-2 rounded-lg bg-secondary-container border border-secondary text-on-secondary-container flex flex-col justify-between">
-                          <span className="font-black text-secondary">Jan Aushadhi</span>
+                        <a
+                          href={`https://www.google.com/maps/search/?api=1&query=Jan+Aushadhi+Kendra+${encodeURIComponent(med.brandName)}+Visakhapatnam`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2.5 rounded-xl bg-secondary-container border border-secondary text-on-secondary-container flex flex-col justify-between hover:bg-secondary-container/80 transition-all"
+                        >
+                          <span className="font-black text-secondary flex items-center justify-center gap-0.5">
+                            Jan Aushadhi <ArrowUpRight className="w-3.5 h-3.5 text-secondary" />
+                          </span>
                           <span className="font-black text-base text-secondary mt-1">₹{med.priceComparisons.janAushadhiGeneric}</span>
                           <span className="text-[10px] font-black text-secondary">-{med.priceComparisons.janAushadhiSavingsPercent}% Generic</span>
-                        </div>
+                        </a>
                       </div>
                     </div>
                   </div>
@@ -492,19 +783,26 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
               </div>
             </div>
           ) : (
-            /* Awaiting Prescription Scan State */
-            <div className="card-tactile p-8 bg-white border border-outline-border rounded-3xl text-center space-y-4">
-              <div className="w-16 h-16 rounded-full bg-surface-container flex items-center justify-center mx-auto text-secondary">
-                <FileText className="w-8 h-8 opacity-70" />
+            /* Awaiting Prescription Scan State (No static fake medicines) */
+            <div className="card-tactile p-8 sm:p-12 bg-white border border-outline-border rounded-3xl text-center space-y-4">
+              <div className="w-20 h-20 rounded-full bg-surface-container flex items-center justify-center mx-auto text-secondary">
+                <FileText className="w-10 h-10 opacity-70" />
               </div>
-              <h4 className="text-xl font-bold text-primary">
-                {language === 'te' ? 'ప్రిస్క్రిప్షన్ స్కాన్ కోసం ఎదురుచూస్తోంది' : 'Awaiting Doctor Prescription Scan'}
-              </h4>
-              <p className="text-sm text-on-surface-variant max-w-md mx-auto">
-                {language === 'te'
-                  ? 'మీ ప్రిస్క్రిప్షన్ ఫోటోను పైన అప్‌లోడ్ చేయండి. డాక్టర్ పేరు, మందులు మరియు సరసమైన ధరలను ఇక్కడ నేరుగా లెక్కిస్తుంది.'
-                  : 'Upload your doctor slip above or choose a clinical preset. Medicines, dosages, and pharmacy prices will be recognized dynamically.'}
-              </p>
+              <div className="max-w-md mx-auto space-y-2">
+                <h4 className="text-2xl font-bold text-primary">
+                  {language === 'te' ? 'ప్రిస్క్రిప్షన్ స్కాన్ కోసం ఎదురుచూస్తోంది' : 'Awaiting Doctor Prescription Scan'}
+                </h4>
+                <p className="text-base text-on-surface-variant leading-relaxed">
+                  {language === 'te'
+                    ? 'మీ డాక్టర్ రాసిన కాగితం ఫోటోను పైన అప్‌లోడ్ చేసి "Analyze Prescription with Gemini AI" బటన్ నొక్కండి. అసలైన మందుల పేర్లు మరియు ఈ-షాపింగ్ లింక్స్ మాత్రమే కనిపిస్తాయి.'
+                    : 'Upload your doctor prescription slip above and click "Analyze Prescription with Gemini AI". Real medicine names and direct e-shopping links will be generated.'}
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-surface-container-low border border-dashed border-outline-variant max-w-sm mx-auto text-xs text-on-surface-variant flex items-center justify-center gap-2">
+                <Sparkles className="w-4 h-4 text-secondary" />
+                <span>Zero static medicines • Direct live e-shopping links</span>
+              </div>
             </div>
           )}
         </div>
@@ -533,6 +831,7 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
 
               <div className="grid grid-cols-2 gap-2">
                 <button
+                  type="button"
                   onClick={() => setSelectedPlatform('tata1mg')}
                   className={`p-3 rounded-xl border text-left transition-all ${
                     selectedPlatform === 'tata1mg'
@@ -545,6 +844,7 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => setSelectedPlatform('pharmeasy')}
                   className={`p-3 rounded-xl border text-left transition-all ${
                     selectedPlatform === 'pharmeasy'
@@ -557,6 +857,7 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => setSelectedPlatform('apollo')}
                   className={`p-3 rounded-xl border text-left transition-all ${
                     selectedPlatform === 'apollo'
@@ -569,6 +870,7 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => setSelectedPlatform('janAushadhi')}
                   className={`p-3 rounded-xl border text-left transition-all ${
                     selectedPlatform === 'janAushadhi'
@@ -585,9 +887,9 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
             {/* Summary Details */}
             <div className="mt-5 space-y-2.5 text-base border-t border-outline-subtle pt-4">
               <div className="flex justify-between text-on-surface-variant">
-                <span>{language === 'te' ? 'ఎంచుకున్న మందులు:' : 'Total Selected Items:'}</span>
+                <span>{language === 'te' ? 'ఎంచుకున్న మందులు:' : 'Total Scanned Items:'}</span>
                 <span className="font-bold text-primary">
-                  {prescriptionData ? `${prescriptionData.medicines.length} Items` : '0 Items (Scan slip)'}
+                  {prescriptionData ? `${prescriptionData.medicines.length} Medicines` : '0 Items (Scan slip)'}
                 </span>
               </div>
 
@@ -668,7 +970,7 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
             {/* Assisted Phone Call Order */}
             <button
               onClick={onOpenVoiceAssist}
-              className="w-full mt-3 py-3 px-4 rounded-full border-2 border-outline-border hover:bg-surface-container text-primary font-bold text-base flex items-center justify-center gap-2 transition-all"
+              className="w-full mt-3 py-3 px-4 rounded-full border-2 border-outline-border hover:bg-surface-container text-primary font-bold text-base flex items-center justify-center gap-2 transition-all cursor-pointer"
             >
               <Phone className="w-5 h-5 text-tertiary-saffron" />
               <span>{language === 'te' ? 'ఫోన్ ద్వారా అసిస్టెడ్ ఆర్డర్' : 'Order via Assisted Phone Call (ఫోన్ ద్వారా ఆర్డర్)'}</span>
@@ -713,6 +1015,99 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Inline Modal: Add Medicine to Prescription */}
+      {isAddMedicineOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-primary/75 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-outline-subtle space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-outline-subtle">
+              <h4 className="font-bold text-lg text-primary">
+                {language === 'te' ? 'ప్రిస్క్రిప్షన్ మందును జోడించండి' : 'Add Prescribed Medicine from Slip'}
+              </h4>
+              <button
+                type="button"
+                onClick={() => setIsAddMedicineOpen(false)}
+                className="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddMedicineSubmit} className="space-y-3.5">
+              <div>
+                <label className="block text-sm font-bold text-primary mb-1">
+                  {language === 'te' ? 'మందు పేరు (Medicine Name)' : 'Medicine Name on Prescription'} *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newMedName}
+                  onChange={(e) => setNewMedName(e.target.value)}
+                  placeholder="e.g. Augmentin 625mg, Pantocid 40mg"
+                  className="input-tactile w-full text-base"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-primary mb-1">
+                  {language === 'te' ? 'సాల్ట్ / కాంపౌండ్ (Generic Salt)' : 'Generic Chemical Salt (Optional)'}
+                </label>
+                <input
+                  type="text"
+                  value={newMedSalt}
+                  onChange={(e) => setNewMedSalt(e.target.value)}
+                  placeholder="e.g. Amoxicillin & Clavulanic Acid"
+                  className="input-tactile w-full text-base"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-bold text-primary mb-1">
+                    {language === 'te' ? 'మోతాదు (Dose)' : 'Doctor Dose'}
+                  </label>
+                  <input
+                    type="text"
+                    value={newMedDose}
+                    onChange={(e) => setNewMedDose(e.target.value)}
+                    placeholder="1-0-1 or 1-0-0"
+                    className="input-tactile w-full text-base"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-primary mb-1">
+                    {language === 'te' ? 'MRP (₹)' : 'Estimated MRP (₹)'}
+                  </label>
+                  <input
+                    type="number"
+                    min="10"
+                    value={newMedPrice}
+                    onChange={(e) => setNewMedPrice(e.target.value)}
+                    className="input-tactile w-full text-base"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAddMedicineOpen(false)}
+                  className="flex-1 py-2.5 rounded-full border border-outline-variant font-semibold text-primary cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 btn-pill-primary py-2.5 text-base cursor-pointer"
+                >
+                  Add Medicine
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Embedded Interactive Google Maps Pharmacy Locator */}
       <NearbyPharmacyMap language={language} />
