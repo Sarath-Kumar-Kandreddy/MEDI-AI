@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { Language, CitizenProfile } from '../types';
 import { SAMPLE_CITIZENS } from '../data/mockData';
+import { fetchCitizenRecords } from '../services/firebase';
 import { 
   Shield, Award, AlertTriangle, CheckCircle, 
   Trash2, Hospital, ArrowRight 
@@ -18,8 +19,12 @@ export const AboutSection: React.FC<AboutSectionProps> = ({
   onNavigateToSchemes,
   onNavigateToTokens,
 }) => {
-  const [citizenRecords, setCitizenRecords] = useState<CitizenProfile[]>(SAMPLE_CITIZENS);
+  const [citizenRecords, setCitizenRecords] = useState<CitizenProfile[]>(() => fetchCitizenRecords(SAMPLE_CITIZENS));
   const [dataCleared, setDataCleared] = useState(false);
+
+  useEffect(() => {
+    setCitizenRecords(fetchCitizenRecords(SAMPLE_CITIZENS));
+  }, []);
 
   const handleClearData = () => {
     if (confirm(language === 'te' ? 'మీ పరికరంలో ఉన్న తాత్కాలిక డెమో డేటాను తొలగించాలా?' : 'Are you sure you want to clear simulated local citizen records?')) {
@@ -27,6 +32,7 @@ export const AboutSection: React.FC<AboutSectionProps> = ({
       setDataCleared(true);
       localStorage.removeItem('arogya_bandhu_booked_tokens');
       localStorage.removeItem('arogya_bandhu_recent_prescriptions');
+      localStorage.removeItem('arogya_bandhu_scanned_citizens');
     }
   };
 

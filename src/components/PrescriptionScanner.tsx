@@ -6,7 +6,7 @@ import { savePrescriptionRecord } from '../services/firebase';
 import { NearbyPharmacyMap } from './NearbyPharmacyMap';
 import { 
   FileText, Camera, CheckCircle2, ShoppingBag, 
-  Sparkles, Phone, ShieldCheck, Clock, ArrowUpRight 
+  Sparkles, Phone, ShieldCheck, Clock, ArrowUpRight, Stethoscope, RefreshCw 
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -19,8 +19,8 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
   language,
   onOpenVoiceAssist,
 }) => {
-  const [activePreset, setActivePreset] = useState<string>('diabetes');
-  const [prescriptionData, setPrescriptionData] = useState<PrescriptionResult>(PRESET_PRESCRIPTIONS.diabetes);
+  const [activePreset, setActivePreset] = useState<string | null>(null);
+  const [prescriptionData, setPrescriptionData] = useState<PrescriptionResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [selectedPlatform, setSelectedPlatform] = useState<'tata1mg' | 'pharmeasy' | 'apollo' | 'janAushadhi'>('tata1mg');
@@ -28,7 +28,7 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Switch between presets
+  // Switch between presets for testing
   const handleSelectPreset = (key: string) => {
     setActivePreset(key);
     setImagePreview(null);
@@ -40,21 +40,22 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setActivePreset(null);
     const reader = new FileReader();
     reader.onload = async (event) => {
       const base64 = event.target?.result as string;
       setImagePreview(base64);
-      triggerAnalysis(base64, file.type);
+      triggerAnalysis(base64, file.type, file.name);
     };
     reader.readAsDataURL(file);
   };
 
-  // Trigger Gemini API Vision OCR Analysis
-  const triggerAnalysis = async (base64Img?: string, mimeType?: string) => {
+  // Trigger Gemini API Vision OCR Analysis dynamically
+  const triggerAnalysis = async (base64Img?: string, mimeType?: string, fileName?: string) => {
     setIsAnalyzing(true);
     try {
       const img = base64Img || imagePreview || '';
-      const result = await analyzePrescriptionWithGemini(img, mimeType || 'image/jpeg');
+      const result = await analyzePrescriptionWithGemini(img, mimeType || 'image/jpeg', fileName);
       setPrescriptionData(result);
       await savePrescriptionRecord(result);
     } catch (err) {
@@ -64,8 +65,16 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
     }
   };
 
+  // Reset prescription scanner
+  const handleResetPrescription = () => {
+    setPrescriptionData(null);
+    setImagePreview(null);
+    setActivePreset(null);
+  };
+
   // Calculate pricing based on selected platform
   const calculateTotal = () => {
+    if (!prescriptionData) return { mrpTotal: 0, platformTotal: 0, savings: 0, savingsPercent: 0 };
     const medicines = prescriptionData.medicines || [];
     const mrpTotal = medicines.reduce((sum, m) => sum + m.mrp, 0);
 
@@ -107,7 +116,7 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
 
   return (
     <div className="space-y-10">
-      {/* Top Banner from Screenshot 2 */}
+      {/* Top Banner */}
       <div className="bg-primary text-white rounded-3xl p-6 sm:p-8 relative overflow-hidden shadow-tactile">
         <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary text-white text-xs sm:text-sm font-bold">
@@ -126,8 +135,8 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
         </h1>
         <p className="text-surface-dim text-base sm:text-lg max-w-3xl leading-relaxed">
           {language === 'te'
-            ? 'డాక్టర్ రాసిన కాగితం లేదా ప్రిస్క్రిప్షన్ ఫోటో తీయండి. జెమిని AI మందుల పేర్లు, మోతాదు (1-0-1) గుర్తించి, ఫార్మ్‌ఈజీ, టాటా 1mg, అపోలో మరియు జన ఔషధి ధరలను పోల్చి చూపిస్తుంది.'
-            : 'Elderly friendly home delivery across Visakhapatnam (MVP Colony, Gajuwaka, Dwaraka Nagar, Siripuram, Pendurthi). Upload any hospital slip to compare real-time discounts, find affordable generic equivalents, or arrange instant doorstep drops.'}
+            ? 'డాక్టర్ రాసిన కాగితం లేదా ప్రిస్క్రిప్షన్ ఫోటో తీయండి. జెమిని AI వైద్యుల పేరు, రోగ నిర్ధారణ, మరియు మందుల మోతాదును (1-0-1) డైనమిక్‌గా గుర్తించి, ఫార్మ్‌ఈజీ, టాటా 1mg, అపోలో మరియు జన ఔషధి ధరలను పోల్చి చూపిస్తుంది.'
+            : 'Elderly friendly home delivery across Visakhapatnam. Upload any doctor slip to dynamically extract prescribed medicines, dosages, and compare real-time discounts across PharmEasy, Tata 1mg, and subsidized Jan Aushadhi generic kendras.'}
         </p>
 
         {/* 3 Metric Pills */}
@@ -179,7 +188,7 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                     {language === 'te' ? 'AI మెడికల్ ప్రిస్క్రిప్షన్ OCR & మందుల గుర్తింపు' : 'AI Medical Prescription OCR & Medicine Matcher'}
                   </h3>
                   <p className="text-xs text-on-surface-variant">
-                    {language === 'te' ? 'డాక్టర్ ప్రిస్క్రిప్షన్ ఫోటో తీయండి లేదా నమూనాను ఎంచుకోండి' : 'Doctor slip handwriting parsing with Google Gemini'}
+                    {language === 'te' ? 'డాక్టర్ ప్రిస్క్రిప్షన్ ఫోటో తీయండి - వివరాలు నేరుగా విశ్లేషించబడతాయి' : 'Dynamic doctor handwriting parsing with Google Gemini'}
                   </p>
                 </div>
               </div>
@@ -211,7 +220,7 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                   />
                   <span className="text-sm font-semibold text-secondary flex items-center justify-center gap-1">
                     <CheckCircle2 className="w-4 h-4" />
-                    {language === 'te' ? 'ప్రిస్క్రిప్షన్ లోడ్ అయ్యింది - రీ-స్కాన్ చేయడానికి క్లిక్ చేయండి' : 'Slip Loaded - Click to change photo'}
+                    {language === 'te' ? 'ప్రిస్క్రిప్షన్ స్లిప్ లోడ్ అయ్యింది - మరొకటి ఎంచుకోవడానికి క్లిక్ చేయండి' : 'Slip Loaded - Click to change photo'}
                   </span>
                 </div>
               ) : (
@@ -221,22 +230,22 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                   </div>
                   <div>
                     <span className="font-bold text-lg text-primary block">
-                      {language === 'te' ? 'మొబైల్ కెమెరా నుండి ఫోటో తీయండి లేదా అప్‌లోడ్ చేయండి' : 'Tap to Take a Photo or Upload Slip'}
+                      {language === 'te' ? 'డాక్టర్ ప్రిస్క్రిప్షన్ ఫోటో తీయండి లేదా అప్‌లోడ్ చేయండి' : 'Tap to Take a Photo or Upload Prescription'}
                     </span>
                     <p className="text-xs text-on-surface-variant mt-1">
                       {language === 'te'
-                        ? 'కేజీహెచ్, అపోలో, కేర్ హాస్పిటల్స్ డాక్టర్ చేతిరాత మరియు ప్రింటెడ్ స్లిప్పులు గుర్తించబడతాయి'
-                        : 'KGH, Apollo Vizag, Care, King George Hospital Slips Recognized'}
+                        ? 'కేజీహెచ్, అపోలో, కేర్ హాస్పిటల్స్ డాక్టర్ చేతిరాత మరియు మందుల పేర్లు గుర్తించబడతాయి'
+                        : 'Recognizes doctor handwriting, dosages (1-0-1), and hospital letterheads'}
                     </p>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Quick Realistic Visakhapatnam Presets */}
+            {/* Quick Presets for instant clinical demonstration */}
             <div className="mt-5">
               <p className="text-sm font-bold text-on-surface-variant mb-2">
-                {language === 'te' ? 'లేదా వైజాగ్ పేషెంట్ ప్రిస్క్రిప్షన్ నమూనాను ఎంచుకోండి:' : 'Or pick a realistic Visakhapatnam patient prescription:'}
+                {language === 'te' ? 'లేదా పరీక్ష కోసం నమూనా ప్రిస్క్రిప్షన్ ఎంచుకోండి:' : 'Or test with a sample patient prescription:'}
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <button
@@ -292,179 +301,215 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
             {/* Scan Action */}
             <button
               onClick={() => triggerAnalysis()}
-              disabled={isAnalyzing}
-              className="btn-pill-primary w-full flex items-center justify-center gap-2 mt-5 text-lg"
+              disabled={isAnalyzing || (!imagePreview && !activePreset)}
+              className={`btn-pill-primary w-full flex items-center justify-center gap-2 mt-5 text-lg ${
+                (!imagePreview && !activePreset) ? 'opacity-60 cursor-not-allowed' : ''
+              }`}
             >
               {isAnalyzing ? (
                 <>
                   <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>{language === 'te' ? 'జెమిని AI OCR విశ్లేషిస్తోంది...' : 'Gemini AI OCR Analyzing Slip...'}</span>
+                  <span>{language === 'te' ? 'జెమిని AI ప్రిస్క్రిప్షన్ విశ్లేషిస్తోంది...' : 'Gemini AI Analyzing Slip...'}</span>
                 </>
               ) : (
                 <>
                   <Sparkles className="w-5 h-5 text-secondary-fixed" />
-                  <span>{language === 'te' ? 'మందుల మోతాదు & ధరలను విశ్లేషించండి' : 'Analyze Slip & Compare E-Pharmacies'}</span>
+                  <span>{language === 'te' ? 'స్లిప్ స్కాన్ చేసి ధరలను పోల్చండి' : 'Analyze Slip & Compare E-Pharmacies'}</span>
                 </>
               )}
             </button>
           </div>
 
-          {/* Doctor Header & Diagnosis Result */}
-          <div className="p-4 rounded-2xl bg-surface-container-low border border-outline-subtle">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <span className="text-xs uppercase tracking-wider font-bold text-secondary">
-                  {prescriptionData.doctorDetails.hospital}
-                </span>
-                <h4 className="text-base sm:text-lg font-bold text-primary">
-                  {prescriptionData.doctorDetails.doctorName} • {prescriptionData.doctorDetails.department}
-                </h4>
-              </div>
-              <span className="text-xs bg-white px-2.5 py-1 rounded-full border border-outline-variant font-mono">
-                {prescriptionData.doctorDetails.date}
-              </span>
-            </div>
-            <div className="mt-2 pt-2 border-t border-outline-subtle text-sm">
-              <strong className="text-primary">{language === 'te' ? 'రోగ నిర్ధారణ:' : 'Diagnosis:'}</strong>{' '}
-              <span className="text-on-surface-variant font-medium">
-                {language === 'te' && prescriptionData.diagnosisTe ? prescriptionData.diagnosisTe : prescriptionData.diagnosis}
-              </span>
-            </div>
-          </div>
-
-          {/* Recognized Medicines & Dosage Section */}
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xl font-bold text-primary flex items-center gap-2">
-                <FileText className="w-5 h-5 text-secondary" />
-                <span>{language === 'te' ? 'గుర్తించబడిన మందులు మరియు మోతాదు వివరాలు' : 'Recognized Medicines & Dosage'}</span>
-              </h3>
-              <span className="px-3 py-1 rounded-full bg-secondary text-white text-xs font-black">
-                {prescriptionData.medicines.length} {language === 'te' ? 'మందులు' : 'Medicines'}
-              </span>
-            </div>
-
-            {prescriptionData.medicines.map((med, idx) => (
-              <div
-                key={med.id || idx}
-                className="card-tactile p-5 bg-white border border-outline-border rounded-2xl hover:border-secondary transition-all"
-              >
-                {/* Header with Name & MRP */}
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="w-6 h-6 rounded-full bg-primary text-white text-xs font-bold flex items-center justify-center">
-                        {idx + 1}
-                      </span>
-                      <h4 className="text-lg font-bold text-primary">{med.brandName}</h4>
-                      <span className="text-xs bg-surface-container px-2 py-0.5 rounded font-semibold text-on-surface-variant">
-                        {med.quantity}
-                      </span>
+          {/* Dynamic Prescription Content or Awaiting State */}
+          {prescriptionData ? (
+            <div className="space-y-6 animate-fade-in">
+              {/* Doctor Header & Diagnosis Result */}
+              <div className="p-4 rounded-2xl bg-surface-container-low border border-secondary/30 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-9 rounded-full bg-secondary text-white flex items-center justify-center">
+                      <Stethoscope className="w-5 h-5" />
                     </div>
-                    <p className="text-xs text-on-surface-variant font-mono mt-1">
-                      Salt: {med.genericSalt}
-                    </p>
+                    <div>
+                      <span className="text-xs uppercase tracking-wider font-bold text-secondary">
+                        {prescriptionData.doctorDetails.hospital}
+                      </span>
+                      <h4 className="text-base sm:text-lg font-bold text-primary">
+                        {prescriptionData.doctorDetails.doctorName} • {prescriptionData.doctorDetails.department}
+                      </h4>
+                    </div>
                   </div>
-
-                  <div className="text-right">
-                    <span className="text-sm font-bold text-primary">MRP ₹{med.mrp}</span>
-                    <span className="block text-[11px] text-secondary font-semibold">
-                      Govt Ceiling Compliant
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs bg-white px-2.5 py-1 rounded-full border border-outline-variant font-mono">
+                      {prescriptionData.doctorDetails.date}
                     </span>
+                    <button
+                      onClick={handleResetPrescription}
+                      className="text-xs text-outline hover:text-primary underline flex items-center gap-1"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>{language === 'te' ? 'రీసెట్' : 'Clear'}</span>
+                    </button>
                   </div>
                 </div>
-
-                {/* Doctor Dosage & Instructions */}
-                <div className="mt-3 p-3 rounded-xl bg-surface-container-low border border-secondary/20">
-                  <div className="flex items-center gap-2 text-sm font-bold text-primary">
-                    <Clock className="w-4 h-4 text-secondary" />
-                    <span>
-                      {language === 'te' ? 'డాక్టర్ మోతాదు:' : 'Doctor Dose:'}{' '}
-                      <strong className="text-secondary">{med.doctorDose}</strong>
-                    </span>
-                  </div>
-                  <p className="text-xs sm:text-sm text-on-surface-variant mt-1">
-                    {language === 'te' ? med.seniorInstructionsTe : med.seniorInstructionsEn}
-                  </p>
-                </div>
-
-                {/* Direct Platform Comparison (Visakhapatnam) */}
-                <div className="mt-4 pt-3 border-t border-outline-subtle">
-                  <span className="text-xs font-bold text-on-surface-variant block mb-2 uppercase tracking-wider">
-                    {language === 'te' ? 'వైజాగ్ ప్లాట్‌ఫారమ్ ధరల పోలిక (E-Pharmacy Links):' : 'Direct Platform Comparison (Visakhapatnam):'}
+                <div className="mt-3 pt-2 border-t border-outline-subtle text-sm">
+                  <strong className="text-primary">{language === 'te' ? 'రోగ నిర్ధారణ (Diagnosis):' : 'Diagnosis:'}</strong>{' '}
+                  <span className="text-on-surface font-medium">
+                    {language === 'te' && prescriptionData.diagnosisTe ? prescriptionData.diagnosisTe : prescriptionData.diagnosis}
                   </span>
-                  
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-xs">
-                    {/* Tata 1mg */}
-                    <a
-                      href={med.tata1mgSearchUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
-                    >
-                      <span className="font-bold text-primary flex items-center justify-center gap-0.5">
-                        Tata 1mg <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
-                      </span>
-                      <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.tata1mg}</span>
-                      <span className="text-[10px] text-secondary font-semibold">Today 6 PM</span>
-                    </a>
-
-                    {/* Apollo 24|7 */}
-                    <a
-                      href={med.apolloSearchUrl || `https://www.apollopharmacy.in/search-medicines/${encodeURIComponent(med.brandName)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
-                    >
-                      <span className="font-bold text-primary flex items-center justify-center gap-0.5">
-                        Apollo 24|7 <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
-                      </span>
-                      <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.apollo}</span>
-                      <span className="text-[10px] text-secondary font-semibold">60 Mins</span>
-                    </a>
-
-                    {/* PharmEasy */}
-                    <a
-                      href={med.pharmeasySearchUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
-                    >
-                      <span className="font-bold text-primary flex items-center justify-center gap-0.5">
-                        PharmEasy <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
-                      </span>
-                      <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.pharmeasy}</span>
-                      <span className="text-[10px] text-secondary font-semibold">Tomorrow</span>
-                    </a>
-
-                    {/* Netmeds */}
-                    <a
-                      href={med.netmedsSearchUrl || `https://www.netmeds.com/catalogsearch/result?q=${encodeURIComponent(med.brandName)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
-                    >
-                      <span className="font-bold text-primary flex items-center justify-center gap-0.5">
-                        Netmeds <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
-                      </span>
-                      <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.netmeds}</span>
-                      <span className="text-[10px] text-secondary font-semibold">Tomorrow</span>
-                    </a>
-
-                    {/* Jan Aushadhi Generic (Massive Savings) */}
-                    <div className="p-2 rounded-lg bg-secondary-container border border-secondary text-on-secondary-container flex flex-col justify-between">
-                      <span className="font-black text-secondary">Jan Aushadhi</span>
-                      <span className="font-black text-base text-secondary mt-1">₹{med.priceComparisons.janAushadhiGeneric}</span>
-                      <span className="text-[10px] font-black text-secondary">-{med.priceComparisons.janAushadhiSavingsPercent}% Generic</span>
-                    </div>
-                  </div>
                 </div>
               </div>
-            ))}
-          </div>
+
+              {/* Recognized Medicines & Dosage Section */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xl font-bold text-primary flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-secondary" />
+                    <span>{language === 'te' ? 'గుర్తించబడిన మందులు మరియు మోతాదు వివరాలు' : 'Recognized Medicines & Dosage'}</span>
+                  </h3>
+                  <span className="px-3 py-1 rounded-full bg-secondary text-white text-xs font-black">
+                    {prescriptionData.medicines.length} {language === 'te' ? 'మందులు' : 'Medicines'}
+                  </span>
+                </div>
+
+                {prescriptionData.medicines.map((med, idx) => (
+                  <div
+                    key={med.id || idx}
+                    className="card-tactile p-5 bg-white border border-outline-border rounded-2xl hover:border-secondary transition-all"
+                  >
+                    {/* Header with Name & MRP */}
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-primary text-white text-xs font-bold flex items-center justify-center">
+                            {idx + 1}
+                          </span>
+                          <h4 className="text-lg font-bold text-primary">{med.brandName}</h4>
+                          <span className="text-xs bg-surface-container px-2 py-0.5 rounded font-semibold text-on-surface-variant">
+                            {med.quantity}
+                          </span>
+                        </div>
+                        <p className="text-xs text-on-surface-variant font-mono mt-1">
+                          Salt: {med.genericSalt}
+                        </p>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-sm font-bold text-primary">MRP ₹{med.mrp}</span>
+                        <span className="block text-[11px] text-secondary font-semibold">
+                          Govt Ceiling Compliant
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Doctor Dosage & Instructions */}
+                    <div className="mt-3 p-3 rounded-xl bg-surface-container-low border border-secondary/20">
+                      <div className="flex items-center gap-2 text-sm font-bold text-primary">
+                        <Clock className="w-4 h-4 text-secondary" />
+                        <span>
+                          {language === 'te' ? 'డాక్టర్ మోతాదు:' : 'Doctor Dose:'}{' '}
+                          <strong className="text-secondary">{med.doctorDose}</strong>
+                        </span>
+                      </div>
+                      <p className="text-xs sm:text-sm text-on-surface-variant mt-1">
+                        {language === 'te' ? med.seniorInstructionsTe : med.seniorInstructionsEn}
+                      </p>
+                    </div>
+
+                    {/* Direct Platform Comparison (Visakhapatnam) */}
+                    <div className="mt-4 pt-3 border-t border-outline-subtle">
+                      <span className="text-xs font-bold text-on-surface-variant block mb-2 uppercase tracking-wider">
+                        {language === 'te' ? 'వైజాగ్ ప్లాట్‌ఫారమ్ ధరల పోలిక (E-Pharmacy Links):' : 'Direct Platform Comparison (Visakhapatnam):'}
+                      </span>
+                      
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-xs">
+                        {/* Tata 1mg */}
+                        <a
+                          href={med.tata1mgSearchUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
+                        >
+                          <span className="font-bold text-primary flex items-center justify-center gap-0.5">
+                            Tata 1mg <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
+                          </span>
+                          <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.tata1mg}</span>
+                          <span className="text-[10px] text-secondary font-semibold">Today 6 PM</span>
+                        </a>
+
+                        {/* Apollo 24|7 */}
+                        <a
+                          href={med.apolloSearchUrl || `https://www.apollopharmacy.in/search-medicines/${encodeURIComponent(med.brandName)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
+                        >
+                          <span className="font-bold text-primary flex items-center justify-center gap-0.5">
+                            Apollo 24|7 <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
+                          </span>
+                          <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.apollo}</span>
+                          <span className="text-[10px] text-secondary font-semibold">60 Mins</span>
+                        </a>
+
+                        {/* PharmEasy */}
+                        <a
+                          href={med.pharmeasySearchUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
+                        >
+                          <span className="font-bold text-primary flex items-center justify-center gap-0.5">
+                            PharmEasy <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
+                          </span>
+                          <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.pharmeasy}</span>
+                          <span className="text-[10px] text-secondary font-semibold">Tomorrow</span>
+                        </a>
+
+                        {/* Netmeds */}
+                        <a
+                          href={med.netmedsSearchUrl || `https://www.netmeds.com/catalogsearch/result?q=${encodeURIComponent(med.brandName)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 rounded-lg bg-surface hover:bg-secondary-container/40 border border-outline-subtle flex flex-col justify-between group transition-all"
+                        >
+                          <span className="font-bold text-primary flex items-center justify-center gap-0.5">
+                            Netmeds <ArrowUpRight className="w-3 h-3 text-secondary opacity-70 group-hover:opacity-100" />
+                          </span>
+                          <span className="font-extrabold text-primary text-sm mt-1">₹{med.priceComparisons.netmeds}</span>
+                          <span className="text-[10px] text-secondary font-semibold">Tomorrow</span>
+                        </a>
+
+                        {/* Jan Aushadhi Generic (Massive Savings) */}
+                        <div className="p-2 rounded-lg bg-secondary-container border border-secondary text-on-secondary-container flex flex-col justify-between">
+                          <span className="font-black text-secondary">Jan Aushadhi</span>
+                          <span className="font-black text-base text-secondary mt-1">₹{med.priceComparisons.janAushadhiGeneric}</span>
+                          <span className="text-[10px] font-black text-secondary">-{med.priceComparisons.janAushadhiSavingsPercent}% Generic</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* Awaiting Prescription Scan State */
+            <div className="card-tactile p-8 bg-white border border-outline-border rounded-3xl text-center space-y-4">
+              <div className="w-16 h-16 rounded-full bg-surface-container flex items-center justify-center mx-auto text-secondary">
+                <FileText className="w-8 h-8 opacity-70" />
+              </div>
+              <h4 className="text-xl font-bold text-primary">
+                {language === 'te' ? 'ప్రిస్క్రిప్షన్ స్కాన్ కోసం ఎదురుచూస్తోంది' : 'Awaiting Doctor Prescription Scan'}
+              </h4>
+              <p className="text-sm text-on-surface-variant max-w-md mx-auto">
+                {language === 'te'
+                  ? 'మీ ప్రిస్క్రిప్షన్ ఫోటోను పైన అప్‌లోడ్ చేయండి. డాక్టర్ పేరు, మందులు మరియు సరసమైన ధరలను ఇక్కడ నేరుగా లెక్కిస్తుంది.'
+                  : 'Upload your doctor slip above or choose a clinical preset. Medicines, dosages, and pharmacy prices will be recognized dynamically.'}
+              </p>
+            </div>
+          )}
         </div>
 
-        {/* Right Column: Direct Delivery Basket & Pharmacy Networks (from Screenshot 2) */}
+        {/* Right Column: Direct Delivery Basket & Pharmacy Networks */}
         <div className="lg:col-span-5 space-y-6">
           {/* Direct Delivery Basket Card */}
           <div className="card-tactile p-6 bg-white border border-outline-border rounded-3xl shadow-tactile">
@@ -541,7 +586,9 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
             <div className="mt-5 space-y-2.5 text-base border-t border-outline-subtle pt-4">
               <div className="flex justify-between text-on-surface-variant">
                 <span>{language === 'te' ? 'ఎంచుకున్న మందులు:' : 'Total Selected Items:'}</span>
-                <span className="font-bold text-primary">{prescriptionData.medicines.length} Items</span>
+                <span className="font-bold text-primary">
+                  {prescriptionData ? `${prescriptionData.medicines.length} Items` : '0 Items (Scan slip)'}
+                </span>
               </div>
 
               <div className="flex justify-between text-on-surface-variant">
@@ -568,7 +615,9 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
                 </span>
                 <div className="text-right">
                   <span className="text-2xl sm:text-3xl font-black text-primary">₹{platformTotal}</span>
-                  <span className="block text-xs line-through text-outline">MRP ₹{mrpTotal}</span>
+                  {mrpTotal > 0 && (
+                    <span className="block text-xs line-through text-outline">MRP ₹{mrpTotal}</span>
+                  )}
                 </div>
               </div>
             </div>
@@ -607,7 +656,10 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
             {/* Order Dispatch Button */}
             <button
               onClick={handlePlaceOrder}
-              className="btn-pill-primary w-full mt-5 text-lg flex items-center justify-center gap-2"
+              disabled={!prescriptionData || prescriptionData.medicines.length === 0}
+              className={`btn-pill-primary w-full mt-5 text-lg flex items-center justify-center gap-2 ${
+                (!prescriptionData || prescriptionData.medicines.length === 0) ? 'opacity-60 cursor-not-allowed' : ''
+              }`}
             >
               <ShoppingBag className="w-5 h-5 text-secondary-fixed" />
               <span>{language === 'te' ? 'ఆర్డర్ పూర్తి చేయండి' : 'Proceed to Order (ఆర్డర్ పూర్తి చేయండి)'}</span>
@@ -628,7 +680,7 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
             </p>
           </div>
 
-          {/* Connected Vizag Pharmacy Networks (from Screenshot 2) */}
+          {/* Connected Vizag Pharmacy Networks */}
           <div className="card-tactile p-6 bg-white border border-outline-border rounded-3xl">
             <h4 className="font-bold text-lg text-primary mb-3">
               {language === 'te' ? 'అనుసంధానించబడిన వైజాగ్ ఫార్మసీ నెట్‌వర్క్' : 'Connected Vizag Pharmacy Networks'}
@@ -662,7 +714,7 @@ export const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({
         </div>
       </div>
 
-      {/* Embedded Interactive Google Maps Pharmacy Locator (as explicitly requested) */}
+      {/* Embedded Interactive Google Maps Pharmacy Locator */}
       <NearbyPharmacyMap language={language} />
     </div>
   );

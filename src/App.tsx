@@ -31,8 +31,28 @@ export function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Voice assistant handler
-  const handleVoiceAction = (actionType: 'bookToken' | 'orderMedicine' | 'checkSchemes') => {
+  // Voice assistant handler (dynamically takes spoken patient name if provided)
+  const handleVoiceAction = (
+    actionType: 'bookToken' | 'orderMedicine' | 'checkSchemes',
+    _voiceText: string,
+    extractedName?: string
+  ) => {
+    if (extractedName) {
+      setPrefillProfile({
+        id: `voice-${Date.now()}`,
+        fullName: extractedName,
+        nameTe: extractedName,
+        age: 65,
+        gender: 'Male',
+        maskedAadhaar: `XXXX-XXXX-${Math.floor(1000 + Math.random() * 9000)}`,
+        locality: 'Visakhapatnam, Andhra Pradesh',
+        rationCategory: 'BPL White Card',
+        chronicIllnessFlags: ['Geriatric Consultation'],
+        recommendedHospital: 'King George Hospital (KGH) • Maharani Peta, Vizag',
+        recommendedDepartment: 'Geriatric Care • Room 14'
+      });
+    }
+
     if (actionType === 'bookToken') setActiveTab('tokens');
     else if (actionType === 'orderMedicine') setActiveTab('prescription');
     else if (actionType === 'checkSchemes') setActiveTab('schemes');
@@ -97,7 +117,7 @@ export function App() {
         )}
       </main>
 
-      {/* Persistent Floating Voice & Bilingual Action Bar (from Design Specs) */}
+      {/* Persistent Floating Voice & Bilingual Action Bar */}
       <aside aria-label="Quick Voice Assistant" className="fixed bottom-6 right-6 z-40">
         <button
           onClick={() => setIsVoiceModalOpen(true)}

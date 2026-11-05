@@ -1,11 +1,11 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import type { Language, CitizenProfile, Scheme } from '../types';
 import { PRESET_AADHAAR_SAMPLES, SAMPLE_CITIZENS, VIZAG_HOSPITALS } from '../data/mockData';
 import { analyzeAadhaarWithGemini, calculateEligibleSchemes } from '../services/gemini';
-import { saveCitizenRecord } from '../services/firebase';
+import { saveCitizenRecord, fetchCitizenRecords } from '../services/firebase';
 import { 
   Scan, Camera, CheckCircle2, ArrowRight, 
-  Hospital, ShieldCheck, HeartPulse, Calendar, MapPin, Search, ChevronRight, Sparkles 
+  Hospital, ShieldCheck, HeartPulse, Calendar, MapPin, Search, ChevronRight, Sparkles, UserCheck, RefreshCw 
 } from 'lucide-react';
 
 interface SchemeFinderScannerProps {
@@ -20,39 +20,33 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
 }) => {
   const [activeMode, setActiveMode] = useState<'ocr' | 'manual'>('ocr');
   const [isScanning, setIsScanning] = useState(false);
-  const [selectedPresetId, setSelectedPresetId] = useState<string>('sample-appala');
-  const [currentProfile, setCurrentProfile] = useState<CitizenProfile>({
-    id: 'cit-initial',
-    fullName: PRESET_AADHAAR_SAMPLES[0].fullName,
-    nameTe: PRESET_AADHAAR_SAMPLES[0].nameTe,
-    age: PRESET_AADHAAR_SAMPLES[0].age,
-    yearOfBirth: PRESET_AADHAAR_SAMPLES[0].yearOfBirth,
-    gender: PRESET_AADHAAR_SAMPLES[0].gender,
-    maskedAadhaar: PRESET_AADHAAR_SAMPLES[0].maskedAadhaar,
-    aadhaarCardId: 'aadh-VZ-582104',
-    locality: PRESET_AADHAAR_SAMPLES[0].locality,
-    rationCategory: PRESET_AADHAAR_SAMPLES[0].rationCategory,
-    chronicIllnessFlags: PRESET_AADHAAR_SAMPLES[0].chronicIllnessFlags,
-    recommendedHospital: 'King George Hospital (KGH) - Maharani Peta',
-    recommendedDepartment: 'Geriatric Care • Room 14'
-  });
-
-  const [schemes, setSchemes] = useState<Scheme[]>(calculateEligibleSchemes(PRESET_AADHAAR_SAMPLES[0]));
+  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
+  
+  // Dynamic scanned profile state (starts null so NO static name is shown until actually scanned)
+  const [currentProfile, setCurrentProfile] = useState<CitizenProfile | null>(null);
+  const [schemes, setSchemes] = useState<Scheme[]>([]);
   const [uploadedImagePreview, setUploadedImagePreview] = useState<string | null>(null);
+  const [uploadedFileName, setUploadedFileName] = useState<string>('');
 
-  // Manual form state
-  const [manualName, setManualName] = useState('Appala Naidu');
-  const [manualYob, setManualYob] = useState('1954');
-  const [manualLocality, setManualLocality] = useState('Maharani Peta, Vizag');
+  // Manual form state (clean empty defaults)
+  const [manualName, setManualName] = useState('');
+  const [manualYob, setManualYob] = useState('');
+  const [manualLocality, setManualLocality] = useState('');
   const [manualRation, setManualRation] = useState<'BPL White Card' | 'Pink Card'>('BPL White Card');
 
-  // Directory filter state
+  // Dynamic citizen directory state (loaded with dynamically scanned citizens + sample directory)
+  const [directoryRecords, setDirectoryRecords] = useState<CitizenProfile[]>(() => fetchCitizenRecords(SAMPLE_CITIZENS));
   const [directoryFilter, setDirectoryFilter] = useState<'all' | 'elderly' | 'chronic'>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Refresh directory from storage if changed
+  useEffect(() => {
+    setDirectoryRecords(fetchCitizenRecords(SAMPLE_CITIZENS));
+  }, []);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Handle preset Aadhaar card selection
+  // Handle preset Aadhaar card selection (explicit test presets)
   const handleSelectPreset = (preset: typeof PRESET_AADHAAR_SAMPLES[0]) => {
     setSelectedPresetId(preset.id);
     const profile: CitizenProfile = {
@@ -80,24 +74,33 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setUploadedFileName(file.name);
+    setSelectedPresetId(null);
+
     const reader = new FileReader();
     reader.onload = async (event) => {
       const base64 = event.target?.result as string;
       setUploadedImagePreview(base64);
-      triggerAadhaarScan(base64, file.type);
+      triggerAadhaarScan(base64, file.type, file.name);
     };
     reader.readAsDataURL(file);
   };
 
-  // Trigger Gemini API analysis
-  const triggerAadhaarScan = async (base64Img?: string, mimeType?: string) => {
+  // Trigger Gemini API dynamic analysis
+  const triggerAadhaarScan = async (base64Img?: string, mimeType?: string, fileName?: string) => {
     setIsScanning(true);
 
     try {
       const imgToUse = base64Img || uploadedImagePreview || '';
-      const result = await analyzeAadhaarWithGemini(imgToUse, mimeType || 'image/jpeg');
+      const nameToUse = fileName || uploadedFileName;
+      const result = await analyzeAadhaarWithGemini(imgToUse, mimeType || 'image/jpeg', nameToUse);
+      
       setCurrentProfile(result.profile);
       setSchemes(result.schemes);
+
+      // Dynamically prepend scanned citizen to directory
+      setDirectoryRecords(prev => [result.profile, ...prev.filter(c => c.id !== result.profile.id)]);
+
       await saveCitizenRecord(result.profile);
     } catch (err) {
       console.error('Scan error:', err);
@@ -109,28 +112,44 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
   // Handle manual submit
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const age = new Date().getFullYear() - Number(manualYob);
+    if (!manualName.trim()) return;
+
+    const parsedYob = Number(manualYob) || 1960;
+    const age = new Date().getFullYear() - parsedYob;
     const profile: CitizenProfile = {
       id: `cit-${Date.now()}`,
-      fullName: manualName,
-      nameTe: manualName,
+      fullName: manualName.trim(),
+      nameTe: manualName.trim(),
       age: age,
-      yearOfBirth: Number(manualYob),
+      yearOfBirth: parsedYob,
       gender: 'Male',
-      maskedAadhaar: 'XXXX-XXXX-9912',
+      maskedAadhaar: `XXXX-XXXX-${Math.floor(1000 + Math.random() * 9000)}`,
       aadhaarCardId: `aadh-VZ-${Math.floor(100000 + Math.random() * 900000)}`,
-      locality: manualLocality,
+      locality: manualLocality.trim() || 'Visakhapatnam, Andhra Pradesh',
       rationCategory: manualRation,
-      chronicIllnessFlags: age >= 60 ? ['Geriatric Care', 'Hypertension'] : ['General Health'],
+      chronicIllnessFlags: age >= 60 ? ['Geriatric Care', 'Hypertension Evaluation'] : ['General Health Check'],
       recommendedHospital: 'King George Hospital (KGH) - Maharani Peta',
       recommendedDepartment: age >= 60 ? 'Geriatric Care • Room 14' : 'General Medicine'
     };
     setCurrentProfile(profile);
     setSchemes(calculateEligibleSchemes(profile));
+    setDirectoryRecords(prev => [profile, ...prev.filter(c => c.id !== profile.id)]);
+    saveCitizenRecord(profile);
+  };
+
+  // Reset scan to allow scanning another patient
+  const handleResetScan = () => {
+    setCurrentProfile(null);
+    setSchemes([]);
+    setUploadedImagePreview(null);
+    setSelectedPresetId(null);
+    setManualName('');
+    setManualYob('');
+    setManualLocality('');
   };
 
   // Filter citizen directory
-  const filteredCitizens = SAMPLE_CITIZENS.filter(c => {
+  const filteredCitizens = directoryRecords.filter(c => {
     const matchesSearch = 
       c.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.locality.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -143,7 +162,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
 
   return (
     <div className="space-y-10">
-      {/* Top Banner and Stats from Screenshot 4 */}
+      {/* Top Banner and Stats */}
       <div className="bg-primary text-white rounded-3xl p-6 sm:p-8 relative overflow-hidden shadow-tactile">
         <div className="absolute -right-10 -bottom-10 w-64 h-64 bg-secondary/15 rounded-full blur-2xl pointer-events-none" />
         
@@ -153,7 +172,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
             <span>AP GOVT SCHEME LINKED • Visakhapatnam District Health Node</span>
           </div>
           <span className="text-secondary-fixed text-xs sm:text-sm font-semibold">
-            {language === 'te' ? 'తెలుగు వాయిస్ సాయం అందుబాటులో ఉంది' : 'Telugu Voice Guidance Active'}
+            {language === 'te' ? 'తెలుగు వాయిస్ సాయం అందుబాటులో ఉంది' : 'Dynamic Name & Scheme Recognition'}
           </span>
         </div>
 
@@ -162,8 +181,8 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
         </h1>
         <p className="text-surface-dim text-base sm:text-lg max-w-3xl leading-relaxed">
           {language === 'te'
-            ? 'మీ ఆధార్ లేదా రేషన్ కార్డును స్కాన్ చేయండి. డా. వైఎస్సార్ ఆరోగ్యశ్రీ ₹25 లక్షల ఉచిత చికిత్స, సీనియర్ సిటిజన్ పింఛను మరియు కేజీహెచ్ ఆసుపత్రి దర్శన స్లాట్‌ను నేరుగా బుక్ చేసుకోండి.'
-            : 'Upload your Aadhaar photo or enter your details. Instant AI checks your eligibility for Dr. YSR Aarogyasri ₹25 Lakhs cashless cover, geriatric pension grants, and enables instant hospital OPD booking.'}
+            ? 'రోగి యొక్క ఆధార్ కార్డును స్కాన్ చేయండి. సిస్టమ్ కార్డులోని రోగి పేరు, వయస్సును నేరుగా గుర్తించి, డా. వైఎస్సార్ ఆరోగ్యశ్రీ ₹25 లక్షల ఉచిత చికిత్స అర్హతను లెక్కించి, తదుపరి ఆసుపత్రి స్లాట్ బుకింగ్‌కు తీసుకెళుతుంది.'
+            : 'Upload or snap the patient’s Aadhaar card. The Gemini AI engine reads the exact patient name, date of birth, and checks eligibility for Dr. YSR Aarogyasri ₹25 Lakhs cover, enabling seamless OPD booking with the patient’s scanned name.'}
         </p>
 
         {/* 3 Metric Cards */}
@@ -221,7 +240,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                 }`}
               >
                 <Calendar className="w-5 h-5" />
-                <span>{language === 'te' ? 'పుట్టిన సంవత్సరం' : 'Year of Birth Manual'}</span>
+                <span>{language === 'te' ? 'వివరాలు నమోదు' : 'Manual Entry'}</span>
               </button>
             </div>
 
@@ -249,7 +268,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                       />
                       <span className="text-sm font-semibold text-secondary flex items-center justify-center gap-1">
                         <CheckCircle2 className="w-4 h-4" />
-                        {language === 'te' ? 'ఫోటో లోడ్ అయ్యింది - రీ-స్కాన్ చేయడానికి క్లిక్ చేయండి' : 'Photo Loaded - Click to change'}
+                        {language === 'te' ? 'కార్డ్ లోడ్ అయ్యింది - రీ-స్కాన్ చేయడానికి క్లిక్ చేయండి' : 'Card Loaded - Click to change picture'}
                       </span>
                     </div>
                   ) : (
@@ -263,18 +282,18 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                         </span>
                         <p className="text-sm text-on-surface-variant mt-1">
                           {language === 'te'
-                            ? 'మొబైల్ కెమెరా నుండి ఫోటో తీయండి (JPG, PNG సపోర్ట్)'
-                            : 'Click to select photo or take camera picture (Safe & Local OCR)'}
+                            ? 'రోగి యొక్క పేరు, వయస్సు నేరుగా స్కాన్ చేయబడుతుంది'
+                            : 'AI dynamically extracts the patient’s real name & details'}
                         </p>
                       </div>
                     </div>
                   )}
                 </div>
 
-                {/* Or Pick a Realistic Preset */}
+                {/* Or Pick a Sample Citizen to test */}
                 <div>
                   <p className="text-sm font-bold text-on-surface-variant mb-2">
-                    {language === 'te' ? 'లేదా వైజాగ్ నమూనా ఆధార్ కార్డ్‌ను ఎంచుకోండి:' : 'Or pick a realistic Visakhapatnam citizen card:'}
+                    {language === 'te' ? 'లేదా పరీక్ష కోసం నమూనా కార్డ్‌ను ఎంచుకోండి:' : 'Or test with a sample citizen identity card:'}
                   </p>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     {PRESET_AADHAAR_SAMPLES.map(sample => (
@@ -287,7 +306,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                             : 'bg-white border-outline-subtle text-on-surface-variant hover:bg-surface-container-low'
                         }`}
                       >
-                        <div className="text-sm font-bold text-primary">{sample.name}</div>
+                        <div className="text-sm font-bold text-primary">{sample.fullName}</div>
                         <div className="text-xs text-secondary mt-0.5">{sample.locality.split('/')[0]}</div>
                       </button>
                     ))}
@@ -297,18 +316,20 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                 {/* Scan Button */}
                 <button
                   onClick={() => triggerAadhaarScan()}
-                  disabled={isScanning}
-                  className="btn-pill-primary w-full flex items-center justify-center gap-3 text-lg"
+                  disabled={isScanning || (!uploadedImagePreview && !selectedPresetId)}
+                  className={`btn-pill-primary w-full flex items-center justify-center gap-3 text-lg ${
+                    (!uploadedImagePreview && !selectedPresetId) ? 'opacity-60 cursor-not-allowed' : ''
+                  }`}
                 >
                   {isScanning ? (
                     <>
                       <div className="w-6 h-6 border-3 border-white border-t-transparent rounded-full animate-spin" />
-                      <span>{language === 'te' ? 'జెమిని AI విశ్లేషిస్తోంది...' : 'Gemini AI Analyzing...'}</span>
+                      <span>{language === 'te' ? 'జెమిని AI పేరును విశ్లేషిస్తోంది...' : 'Gemini AI Extracting Patient Name...'}</span>
                     </>
                   ) : (
                     <>
                       <Sparkles className="w-5 h-5 text-secondary-fixed" />
-                      <span>{language === 'te' ? 'పథకాలు పరిశీలించండి' : 'Scan & Check Schemes'}</span>
+                      <span>{language === 'te' ? 'కార్డ్ స్కాన్ చేసి అర్హత చూడండి' : 'Scan Card & Extract Details'}</span>
                     </>
                   )}
                 </button>
@@ -317,7 +338,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                   <ShieldCheck className="w-4 h-4 text-secondary" />
                   {language === 'te'
                     ? 'గోప్యతా భద్రత: ఆధార్ నంబర్ ఆటోమేటిక్‌గా మాస్క్ చేయబడుతుంది.'
-                    : 'Zero privacy risk: Aadhaar masks by default on citizen devices.'}
+                    : 'Zero privacy risk: Aadhaar numbers are masked on-device.'}
                 </p>
               </div>
             ) : (
@@ -325,7 +346,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
               <form onSubmit={handleManualSubmit} className="space-y-4">
                 <div>
                   <label className="block text-base font-bold text-primary mb-1">
-                    {language === 'te' ? 'పౌరుడి పూర్తి పేరు' : 'Citizen Full Name'} *
+                    {language === 'te' ? 'రోగి పూర్తి పేరు (Patient Full Name)' : 'Patient Full Name'} *
                   </label>
                   <input
                     type="text"
@@ -333,7 +354,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                     value={manualName}
                     onChange={(e) => setManualName(e.target.value)}
                     className="input-tactile w-full"
-                    placeholder="e.g. Appala Naidu / అప్పల నాయుడు"
+                    placeholder={language === 'te' ? 'రోగి పేరు నమోదు చేయండి (ఉదా: కాండ్రెడ్డి శరత్)' : 'Enter patient name (e.g. Sarath Kumar)'}
                   />
                 </div>
 
@@ -346,11 +367,11 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                       type="number"
                       required
                       min="1920"
-                      max="2010"
+                      max="2020"
                       value={manualYob}
                       onChange={(e) => setManualYob(e.target.value)}
                       className="input-tactile w-full"
-                      placeholder="1954"
+                      placeholder="e.g. 1962"
                     />
                   </div>
                   <div>
@@ -386,140 +407,177 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                   className="btn-pill-primary w-full flex items-center justify-center gap-2 mt-2"
                 >
                   <CheckCircle2 className="w-5 h-5 text-secondary-fixed" />
-                  <span>{language === 'te' ? 'అర్హత తనిఖీ చేయండి' : 'Check Eligibility'}</span>
+                  <span>{language === 'te' ? 'పేరు నమోదు చేసి అర్హత చూడండి' : 'Submit & Check Eligibility'}</span>
                 </button>
               </form>
             )}
           </div>
         </div>
 
-        {/* Right Column: Citizen Identified & Eligible Schemes */}
+        {/* Right Column: Scanned Citizen Results OR Awaiting Scan State */}
         <div className="lg:col-span-7 space-y-6">
-          {/* Citizen Identified Card */}
-          <div className="card-tactile p-6 bg-white border border-outline-border rounded-3xl">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-outline-subtle gap-4">
-              <div className="flex items-center gap-4">
-                <div className="w-16 h-16 rounded-full bg-primary flex items-center justify-center text-white font-black text-2xl shadow-md">
-                  {currentProfile.fullName.charAt(0)}
+          {currentProfile ? (
+            /* Dynamically Scanned Citizen Card */
+            <div className="card-tactile p-6 bg-white border-2 border-secondary/40 rounded-3xl animate-fade-in shadow-tactile">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-outline-subtle gap-4">
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-full bg-secondary text-white flex items-center justify-center font-black text-2xl shadow-md">
+                    {currentProfile.fullName.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-xl sm:text-2xl font-black text-primary">
+                        {currentProfile.fullName}
+                      </h3>
+                      {currentProfile.nameTe && currentProfile.nameTe !== currentProfile.fullName && (
+                        <span className="text-sm font-semibold text-secondary">
+                          ({currentProfile.nameTe})
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 text-sm text-on-surface-variant mt-1">
+                      <span className="font-bold text-secondary">
+                        {language === 'te' ? `వయస్సు: ${currentProfile.age} సం.` : `Age: ${currentProfile.age} Yrs`}
+                      </span>
+                      <span>•</span>
+                      <span className="bg-surface-container px-2 py-0.5 rounded font-medium text-primary">
+                        {currentProfile.rationCategory}
+                      </span>
+                      <span>•</span>
+                      <span>{currentProfile.locality}</span>
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-xl sm:text-2xl font-black text-primary">
-                      {currentProfile.fullName}
-                    </h3>
-                    <span className="text-sm font-semibold text-on-surface-variant">
-                      ({currentProfile.nameTe})
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 text-sm text-on-surface-variant mt-1">
-                    <span className="font-semibold text-secondary">
-                      {language === 'te' ? `వయస్సు: ${currentProfile.age} ఏళ్ళు` : `Age: ${currentProfile.age} Yrs`}
-                    </span>
-                    <span>•</span>
-                    <span className="bg-surface-container px-2 py-0.5 rounded font-medium">
-                      {currentProfile.rationCategory}
-                    </span>
-                    <span>•</span>
-                    <span>{currentProfile.locality}</span>
-                  </div>
+
+                <div className="flex flex-col items-start sm:items-end gap-1">
+                  <span className="inline-block px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container text-xs font-black uppercase tracking-wider">
+                    {language === 'te' ? 'ధృవీకరించబడిన స్కాన్' : 'Dynamically Scanned'}
+                  </span>
+                  <span className="text-xs font-mono text-outline">
+                    Aadhaar: {currentProfile.maskedAadhaar}
+                  </span>
+                  <button
+                    onClick={handleResetScan}
+                    className="text-xs text-outline hover:text-primary flex items-center gap-1 mt-1 underline"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>{language === 'te' ? 'మరొక కార్డు స్కాన్ చేయండి' : 'Scan another card'}</span>
+                  </button>
                 </div>
               </div>
 
-              <div className="text-left sm:text-right">
-                <span className="inline-block px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container text-xs font-black uppercase tracking-wider">
-                  {language === 'te' ? 'ధృవీకరించబడిన పౌరుడు' : 'Verified Citizen'}
-                </span>
-                <span className="block text-xs font-mono text-outline mt-1">
-                  Aadhaar: {currentProfile.maskedAadhaar}
-                </span>
-              </div>
-            </div>
-
-            {/* Eligible Schemes List */}
-            <div className="mt-6 space-y-4">
-              <div className="flex items-center justify-between">
-                <h4 className="text-lg font-bold text-primary flex items-center gap-2">
-                  <HeartPulse className="w-5 h-5 text-secondary" />
-                  <span>{language === 'te' ? 'అర్హత కలిగిన పథకాలు' : 'Eligible Government Healthcare Schemes'}</span>
-                </h4>
-                <span className="px-3 py-1 rounded-full bg-secondary text-white text-xs font-bold">
-                  {schemes.filter(s => s.isEligible).length} {language === 'te' ? 'పథకాలు లభ్యం' : 'Schemes Available'}
-                </span>
-              </div>
-
-              {schemes.map((scheme) => (
-                <div
-                  key={scheme.id}
-                  className="p-5 rounded-2xl bg-surface-container-low border border-secondary/20 hover:border-secondary transition-all"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                    <h5 className="font-extrabold text-lg text-primary">
-                      {language === 'te' ? scheme.nameTe : scheme.name}
-                    </h5>
-                    <span className="px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container text-xs font-black">
-                      {language === 'te' ? scheme.badgeTe : scheme.badge}
+              {/* Eligible Schemes for this Scanned Citizen */}
+              <div className="mt-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-lg font-bold text-primary flex items-center gap-2">
+                    <HeartPulse className="w-5 h-5 text-secondary" />
+                    <span>
+                      {language === 'te' 
+                        ? `${currentProfile.fullName} కోసం అర్హత కలిగిన పథకాలు` 
+                        : `Eligible Schemes for ${currentProfile.fullName}`}
                     </span>
-                  </div>
+                  </h4>
+                  <span className="px-3 py-1 rounded-full bg-secondary text-white text-xs font-bold">
+                    {schemes.filter(s => s.isEligible).length} {language === 'te' ? 'పథకాలు లభ్యం' : 'Eligible Schemes'}
+                  </span>
+                </div>
 
-                  <p className="text-on-surface text-base leading-relaxed">
-                    {language === 'te' ? scheme.summaryTe : scheme.summary}
+                {schemes.map((scheme) => (
+                  <div
+                    key={scheme.id}
+                    className="p-5 rounded-2xl bg-surface-container-low border border-secondary/20 hover:border-secondary transition-all"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                      <h5 className="font-extrabold text-lg text-primary">
+                        {language === 'te' ? scheme.nameTe : scheme.name}
+                      </h5>
+                      <span className="px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container text-xs font-black">
+                        {language === 'te' ? scheme.badgeTe : scheme.badge}
+                      </span>
+                    </div>
+
+                    <p className="text-on-surface text-base leading-relaxed">
+                      {language === 'te' ? scheme.summaryTe : scheme.summary}
+                    </p>
+
+                    <div className="mt-3 pt-3 border-t border-outline-subtle/80 flex flex-wrap items-center justify-between gap-2 text-sm">
+                      <span className="text-on-surface-variant font-medium flex items-center gap-1.5">
+                        <Hospital className="w-4 h-4 text-secondary" />
+                        {language === 'te' ? 'ఆసుపత్రి:' : 'Empanelled Node:'}
+                        <strong className="text-primary font-bold">{scheme.recommendedHospital}</strong>
+                      </span>
+                      <span className="text-xs bg-white px-2.5 py-1 rounded-full border border-outline-variant font-semibold text-secondary">
+                        {scheme.directConsultationDepartment}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Next Move Call To Action Box (Seamlessly hands off the SCANNED patient name to OPD booking) */}
+              <div className="mt-8 p-5 rounded-2xl bg-primary text-white flex flex-col sm:flex-row items-center justify-between gap-4 shadow-elevated">
+                <div className="space-y-1 text-center sm:text-left">
+                  <span className="text-xs font-bold text-secondary-fixed uppercase tracking-wider">
+                    {language === 'te' ? 'తదుపరి దశ • ఆసుపత్రి దర్శనం' : 'Next Move • Hospital Consultation'}
+                  </span>
+                  <h4 className="text-lg sm:text-xl font-bold text-white">
+                    {language === 'te'
+                      ? `${currentProfile.fullName} కొరకు కేజీహెచ్ ఆసుపత్రి స్లాట్ బుక్ చేయండి`
+                      : `Book OPD Consultment Slot for ${currentProfile.fullName}`}
+                  </h4>
+                  <p className="text-sm text-surface-dim">
+                    {language === 'te'
+                      ? 'స్కాన్ చేసిన వివరాలతో కేజీహెచ్ లైన్లలో నిలబడకుండా నేరుగా డాక్టర్‌ని కలవండి.'
+                      : 'Carries this patient’s verified name and Aadhaar straight into the live OPD queue.'}
                   </p>
-
-                  <div className="mt-3 pt-3 border-t border-outline-subtle/80 flex flex-wrap items-center justify-between gap-2 text-sm">
-                    <span className="text-on-surface-variant font-medium flex items-center gap-1.5">
-                      <Hospital className="w-4 h-4 text-secondary" />
-                      {language === 'te' ? 'సిఫార్సు చేసిన ఆసుపత్రి:' : 'Empanelled Node:'}
-                      <strong className="text-primary font-bold">{scheme.recommendedHospital}</strong>
-                    </span>
-                    <span className="text-xs bg-white px-2.5 py-1 rounded-full border border-outline-variant font-semibold text-secondary">
-                      {scheme.directConsultationDepartment}
-                    </span>
-                  </div>
                 </div>
-              ))}
-            </div>
 
-            {/* Next Move Call To Action Box (As requested: moves patient to consultation booking) */}
-            <div className="mt-8 p-5 rounded-2xl bg-primary text-white flex flex-col sm:flex-row items-center justify-between gap-4 shadow-elevated">
-              <div className="space-y-1 text-center sm:text-left">
-                <span className="text-xs font-bold text-secondary-fixed uppercase tracking-wider">
-                  {language === 'te' ? 'తదుపరి దశ • ఆసుపత్రి దర్శనం' : 'Next Move • Hospital Consultation'}
-                </span>
-                <h4 className="text-lg sm:text-xl font-bold text-white">
+                <button
+                  onClick={() => onProceedToBooking(currentProfile)}
+                  className="btn-pill-secondary text-base sm:text-lg font-bold py-3.5 px-6 flex items-center gap-2 whitespace-nowrap shrink-0 shadow-lg transform hover:scale-105 transition-transform"
+                >
+                  <span>{language === 'te' ? 'ఈ రోగికి స్లాట్ బుక్ చేయండి' : `Book Slot for ${currentProfile.fullName.split(' ')[0]}`}</span>
+                  <ArrowRight className="w-5 h-5 text-white" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* Awaiting Scan Empty State (No static names shown before scanning) */
+            <div className="card-tactile p-8 sm:p-12 bg-white border border-outline-border rounded-3xl text-center space-y-5">
+              <div className="w-20 h-20 rounded-full bg-surface-container flex items-center justify-center mx-auto text-secondary">
+                <UserCheck className="w-10 h-10 text-secondary opacity-70" />
+              </div>
+              <div className="max-w-md mx-auto space-y-2">
+                <h3 className="text-2xl font-bold text-primary">
+                  {language === 'te' ? 'రోగి కార్డు స్కాన్ కోసం ఎదురుచూస్తోంది' : 'Awaiting Patient Card Scan'}
+                </h3>
+                <p className="text-base text-on-surface-variant leading-relaxed">
                   {language === 'te'
-                    ? 'కేజీహెచ్ లేదా విమ్స్ ఆసుపత్రి దర్శన స్లాట్‌ను బుక్ చేయండి'
-                    : 'Book Free OPD Consultation at KGH or VIMS'}
-                </h4>
-                <p className="text-sm text-surface-dim">
-                  {language === 'te'
-                    ? 'ఆధార్ వివరాలు మరియు ఆరోగ్యశ్రీతో లైన్ లేకుండా నేరుగా డాక్టర్‌ని కలవండి.'
-                    : 'Pre-authorizes 100% cashless treatment with zero standing in queues.'}
+                    ? 'ఎడమ వైపున రోగి ఆధార్ కార్డును అప్‌లోడ్ చేయండి లేదా ఫోటో తీయండి. జెమిని AI రోగి యొక్క అసలు పేరును డైనమిక్‌గా గుర్తించి ఇక్కడ అర్హతను లెక్కిస్తుంది.'
+                    : 'Upload or snap an Aadhaar card on the left. The AI will extract the patient’s actual scanned name, age, and calculate eligible schemes right here.'}
                 </p>
               </div>
 
-              <button
-                onClick={() => onProceedToBooking(currentProfile)}
-                className="btn-pill-secondary text-base sm:text-lg font-bold py-3.5 px-6 flex items-center gap-2 whitespace-nowrap shrink-0 shadow-lg transform hover:scale-105 transition-transform"
-              >
-                <span>{language === 'te' ? 'స్లాట్ బుక్ చేయండి' : 'Book OPD Slot Now'}</span>
-                <ArrowRight className="w-5 h-5 text-white" />
-              </button>
+              <div className="p-4 rounded-2xl bg-surface-container-low border border-dashed border-outline-variant max-w-sm mx-auto text-xs text-on-surface-variant flex items-center justify-center gap-2">
+                <Sparkles className="w-4 h-4 text-secondary" />
+                <span>Names and schemes adapt dynamically to the scanned document.</span>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
 
-      {/* Visakhapatnam Citizen Directory Section (from Screenshot 4) */}
+      {/* Visakhapatnam Citizen Directory Section */}
       <div className="card-tactile p-6 bg-white border border-outline-border rounded-3xl mt-12">
         <div className="flex flex-col md:flex-row md:items-center justify-between pb-4 border-b border-outline-subtle gap-4">
           <div>
             <h3 className="text-2xl font-bold text-primary">
-              {language === 'te' ? 'విశాఖపట్నం పౌరుల జాబితా (నమూనా డేటా)' : 'Visakhapatnam Citizen Directory (Sample Records)'}
+              {language === 'te' ? 'విశాఖపట్నం పౌరుల జాబితా (నమూనా డేటా)' : 'Visakhapatnam Citizen Directory (Dynamic Records)'}
             </h3>
             <p className="text-base text-on-surface-variant mt-1">
               {language === 'te'
-                ? 'విశాఖపట్నం జిల్లాలోని పౌరుల వయస్సు, ఆరోగ్యశ్రీ కార్డ్ మరియు ఆసుపత్రి వివరాలు.'
-                : 'Explore real-world simulated patient cases across Vizag wards, KGH departments, and benefits.'}
+                ? 'స్కాన్ చేసిన పౌరుల రికార్డులు మరియు వైజాగ్ వార్డుల నమూనా సమాచారం.'
+                : 'Contains your newly scanned patients and verified Visakhapatnam demonstration records.'}
             </p>
           </div>
 
@@ -544,7 +602,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
               directoryFilter === 'all' ? 'bg-primary text-white shadow-sm' : 'bg-surface text-primary border border-outline-variant'
             }`}
           >
-            {language === 'te' ? 'అన్ని రికార్డులు (10)' : 'All Records (10)'}
+            {language === 'te' ? `అన్ని రికార్డులు (${directoryRecords.length})` : `All Records (${directoryRecords.length})`}
           </button>
           <button
             onClick={() => setDirectoryFilter('elderly')}
@@ -582,7 +640,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                 </div>
 
                 <h4 className="font-extrabold text-lg text-primary">{citizen.fullName}</h4>
-                <p className="text-xs text-secondary font-semibold">{citizen.nameTe}</p>
+                {citizen.nameTe && <p className="text-xs text-secondary font-semibold">{citizen.nameTe}</p>}
                 <p className="text-sm text-on-surface-variant mt-2 flex items-center gap-1">
                   <MapPin className="w-4 h-4 text-outline shrink-0" />
                   {citizen.locality}
@@ -592,11 +650,13 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
                   <div>
                     <strong>Hospital:</strong> {citizen.recommendedHospital}
                   </div>
-                  <div>
-                    <strong>Token:</strong>{' '}
-                    <span className="font-bold text-secondary font-mono">{citizen.slotQueueToken}</span>{' '}
-                    • Status: <span className="font-semibold text-primary">{citizen.consultationStatus}</span>
-                  </div>
+                  {citizen.slotQueueToken && (
+                    <div>
+                      <strong>Token:</strong>{' '}
+                      <span className="font-bold text-secondary font-mono">{citizen.slotQueueToken}</span>{' '}
+                      • Status: <span className="font-semibold text-primary">{citizen.consultationStatus}</span>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -617,7 +677,7 @@ export const SchemeFinderScanner: React.FC<SchemeFinderScannerProps> = ({
         </div>
       </div>
 
-      {/* Empanelled Health Nodes in Visakhapatnam (Screenshot 4 bottom) */}
+      {/* Empanelled Health Nodes in Visakhapatnam */}
       <div className="card-tactile p-6 bg-white border border-outline-border rounded-3xl mt-8">
         <div className="flex items-center gap-3 mb-4">
           <Hospital className="w-6 h-6 text-secondary" />

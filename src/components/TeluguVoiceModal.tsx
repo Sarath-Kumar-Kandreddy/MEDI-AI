@@ -6,7 +6,7 @@ interface TeluguVoiceModalProps {
   isOpen: boolean;
   onClose: () => void;
   language: Language;
-  onVoiceAction: (actionType: 'bookToken' | 'orderMedicine' | 'checkSchemes', voiceText: string) => void;
+  onVoiceAction: (actionType: 'bookToken' | 'orderMedicine' | 'checkSchemes', voiceText: string, extractedName?: string) => void;
 }
 
 export const TeluguVoiceModal: React.FC<TeluguVoiceModalProps> = ({
@@ -22,8 +22,8 @@ export const TeluguVoiceModal: React.FC<TeluguVoiceModalProps> = ({
   useEffect(() => {
     if (isOpen && !voiceGreetingSpoken && 'speechSynthesis' in window) {
       const textToSpeak = language === 'te'
-        ? 'నమస్కారం! నేను మీ ఆరోగ్య బంధు ఏఐ సహాయకుడిని. మీకు కేజీహెచ్ ఆసుపత్రి టోకెన్ కావాలా లేక మందులు ఆర్డర్ చేయాలా?'
-        : 'Welcome to Arogya Bandhu. How can I assist you with KGH hospital tokens or medicine delivery today?';
+        ? 'నమస్కారం! నేను మీ ఆరోగ్య బంధు ఏఐ సహాయకుడిని. దయచేసి మీ పేరు మరియు కావలసిన సేవను చెప్పండి.'
+        : 'Welcome to Arogya Bandhu. Please speak your name and whether you need an OPD token or medicines.';
 
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
       utterance.lang = language === 'te' ? 'te-IN' : 'en-IN';
@@ -43,6 +43,17 @@ export const TeluguVoiceModal: React.FC<TeluguVoiceModalProps> = ({
   }, [isOpen, language, voiceGreetingSpoken]);
 
   if (!isOpen) return null;
+
+  // Extract spoken name dynamically if present
+  const parseSpokenName = (text: string): string | undefined => {
+    const teMatch = text.match(/నా పేరు\s+([^\s,]+(?:\s+[^\s,]+)?)/i);
+    if (teMatch && teMatch[1]) return teMatch[1].trim();
+
+    const enMatch = text.match(/my name is\s+([^\s,]+(?:\s+[^\s,]+)?)/i);
+    if (enMatch && enMatch[1]) return enMatch[1].trim();
+
+    return undefined;
+  };
 
   const startListening = () => {
     setIsListening(true);
@@ -72,7 +83,7 @@ export const TeluguVoiceModal: React.FC<TeluguVoiceModalProps> = ({
     } else {
       setTimeout(() => {
         setIsListening(false);
-        const sampleText = language === 'te' ? 'కేజీహెచ్ ఆసుపత్రి టోకెన్ బుక్ చేయండి' : 'Book KGH Hospital Token';
+        const sampleText = language === 'te' ? 'కేజీహెచ్ ఆసుపత్రి దర్శన టోకెన్ బుక్ చేయండి' : 'Book KGH Hospital Token';
         setTranscript(sampleText);
         handleEvaluateVoice(sampleText);
       }, 2000);
@@ -80,15 +91,17 @@ export const TeluguVoiceModal: React.FC<TeluguVoiceModalProps> = ({
   };
 
   const handleEvaluateVoice = (text: string) => {
+    const extractedName = parseSpokenName(text);
     const lower = text.toLowerCase();
+
     if (lower.includes('మందు') || lower.includes('medicine') || lower.includes('order') || lower.includes('ఆర్డర్')) {
-      onVoiceAction('orderMedicine', text);
+      onVoiceAction('orderMedicine', text, extractedName);
       onClose();
     } else if (lower.includes('పథక') || lower.includes('ఆధార్') || lower.includes('scheme') || lower.includes('aarogyasri')) {
-      onVoiceAction('checkSchemes', text);
+      onVoiceAction('checkSchemes', text, extractedName);
       onClose();
     } else {
-      onVoiceAction('bookToken', text);
+      onVoiceAction('bookToken', text, extractedName);
       onClose();
     }
   };

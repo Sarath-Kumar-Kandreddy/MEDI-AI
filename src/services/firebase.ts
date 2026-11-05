@@ -8,9 +8,12 @@ import { getStorage } from 'firebase/storage';
 import type { FirebaseStorage } from 'firebase/storage';
 import type { OPDToken, PrescriptionResult, CitizenProfile } from '../types';
 
-// Default Firebase Configuration (can be overridden via environment variables or UI settings modal)
+// Check if a real user-supplied Firebase config exists
+const rawApiKey = import.meta.env.VITE_FIREBASE_API_KEY || "";
+const hasRealFirebaseKey = Boolean(rawApiKey && !rawApiKey.includes("Dummy"));
+
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDummyKeyForVizagArogyaBandhu2026",
+  apiKey: rawApiKey || "AIzaSyDummyKeyForVizagArogyaBandhu2026",
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "arogya-bandhu-ap.firebaseapp.com",
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "arogya-bandhu-ap",
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "arogya-bandhu-ap.appspot.com",
@@ -24,28 +27,33 @@ let auth: Auth | null = null;
 let storage: FirebaseStorage | null = null;
 let isFirebaseLive = false;
 
-try {
-  if (!getApps().length) {
-    app = initializeApp(firebaseConfig);
-  } else {
-    app = getApps()[0];
+if (hasRealFirebaseKey) {
+  try {
+    if (!getApps().length) {
+      app = initializeApp(firebaseConfig);
+    } else {
+      app = getApps()[0];
+    }
+    db = getFirestore(app);
+    auth = getAuth(app);
+    storage = getStorage(app);
+    isFirebaseLive = true;
+  } catch (err) {
+    console.warn("Firebase initialized with local offline fallback mode:", err);
+    isFirebaseLive = false;
   }
-  db = getFirestore(app);
-  auth = getAuth(app);
-  storage = getStorage(app);
-  isFirebaseLive = true;
-} catch (err) {
-  console.warn("Firebase initialized with local offline fallback mode:", err);
+} else {
+  // Offline local-first mode
   isFirebaseLive = false;
 }
 
 export { app, db, auth, storage, isFirebaseLive };
 
 /**
- * Saves a newly booked OPD pass to Cloud Firestore and local storage backup
+ * Saves a newly booked OPD pass instantly to localStorage and optionally to Firestore
  */
 export async function saveOPDToken(token: OPDToken): Promise<boolean> {
-  // Always save to localStorage first for instant offline reliability for senior citizens
+  // Always save immediately to localStorage for zero-latency instant booking
   try {
     const existingStr = localStorage.getItem('arogya_bandhu_booked_tokens');
     const existing: OPDToken[] = existingStr ? JSON.parse(existingStr) : [];
@@ -55,29 +63,34 @@ export async function saveOPDToken(token: OPDToken): Promise<boolean> {
     console.error("Local storage error:", e);
   }
 
-  // Attempt Cloud Firestore push
+  // Non-blocking Firestore push if live
   if (db && isFirebaseLive) {
     try {
       const colRef = collection(db, 'opd_tokens');
-      await addDoc(colRef, {
+      addDoc(colRef, {
         ...token,
         syncedAt: new Date().toISOString()
+      }).catch(err => {
+        console.warn("Async Firestore token note:", err);
       });
-      return true;
     } catch (err) {
-      console.warn("Firestore save token note (using local cache):", err);
-      return true;
+      console.warn("Firestore save token note:", err);
     }
   }
+
   return true;
 }
 
 /**
- * Retrieves booked tokens from Firestore or fallback localStorage
+ * Retrieves booked tokens from localStorage and merges with Firestore
  */
 export async function fetchOPDTokens(fallbackTokens: OPDToken[]): Promise<OPDToken[]> {
   const localStr = localStorage.getItem('arogya_bandhu_booked_tokens');
   const localTokens: OPDToken[] = localStr ? JSON.parse(localStr) : [];
+
+  if (localTokens.length > 0) {
+    return localTokens;
+  }
 
   if (db && isFirebaseLive) {
     try {
@@ -85,14 +98,14 @@ export async function fetchOPDTokens(fallbackTokens: OPDToken[]): Promise<OPDTok
       const snapshot = await getDocs(q);
       const firestoreTokens = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as OPDToken));
       if (firestoreTokens.length > 0) {
-        return [...localTokens, ...firestoreTokens.filter(f => !localTokens.some(l => l.tokenNumber === f.tokenNumber))];
+        return firestoreTokens;
       }
     } catch (err) {
       console.warn("Using offline tokens:", err);
     }
   }
 
-  return localTokens.length > 0 ? localTokens : fallbackTokens;
+  return fallbackTokens;
 }
 
 /**
@@ -110,11 +123,10 @@ export async function savePrescriptionRecord(data: PrescriptionResult): Promise<
   if (db && isFirebaseLive) {
     try {
       const colRef = collection(db, 'prescriptions');
-      await addDoc(colRef, {
+      addDoc(colRef, {
         ...data,
         createdAt: new Date().toISOString()
-      });
-      return true;
+      }).catch(err => console.warn("Async prescription sync note:", err));
     } catch (err) {
       console.warn("Firestore prescription log note:", err);
     }
@@ -123,20 +135,44 @@ export async function savePrescriptionRecord(data: PrescriptionResult): Promise<
 }
 
 /**
- * Saves citizen profile to Firestore
+ * Saves citizen profile to local storage and Firestore
  */
 export async function saveCitizenRecord(profile: CitizenProfile): Promise<boolean> {
+  try {
+    const existingStr = localStorage.getItem('arogya_bandhu_scanned_citizens');
+    const existing: CitizenProfile[] = existingStr ? JSON.parse(existingStr) : [];
+    const updated = [profile, ...existing.filter(c => c.id !== profile.id)];
+    localStorage.setItem('arogya_bandhu_scanned_citizens', JSON.stringify(updated.slice(0, 25)));
+  } catch (e) {
+    console.error("Local storage citizen error:", e);
+  }
+
   if (db && isFirebaseLive) {
     try {
       const colRef = collection(db, 'citizen_records');
-      await addDoc(colRef, {
+      addDoc(colRef, {
         ...profile,
         createdAt: new Date().toISOString()
-      });
-      return true;
+      }).catch(err => console.warn("Async citizen sync note:", err));
     } catch (err) {
       console.warn("Firestore citizen record note:", err);
     }
   }
   return true;
+}
+
+/**
+ * Retrieves scanned citizen records merged with fallback sample data
+ */
+export function fetchCitizenRecords(fallback: CitizenProfile[]): CitizenProfile[] {
+  try {
+    const existingStr = localStorage.getItem('arogya_bandhu_scanned_citizens');
+    if (existingStr) {
+      const scanned: CitizenProfile[] = JSON.parse(existingStr);
+      if (scanned && scanned.length > 0) {
+        return [...scanned, ...fallback.filter(f => !scanned.some(s => s.id === f.id))];
+      }
+    }
+  } catch {}
+  return fallback;
 }
