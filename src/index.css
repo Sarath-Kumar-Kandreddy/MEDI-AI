@@ -1,0 +1,163 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-heading: 'Plus Jakarta Sans', 'Noto Sans Telugu', sans-serif;
+    --font-body: 'Atkinson Hyperlegible', 'Noto Sans Telugu', sans-serif;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    font-size: 16px; /* Strict minimum floor of 16px */
+  }
+
+  body {
+    font-family: var(--font-body);
+    color: #0b1c30;
+    background-color: #f8f9ff;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-height: 100vh;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+    color: #001428;
+    letter-spacing: -0.015em;
+  }
+
+  /* Telugu language text line-height boost (+20% to prevent maatra clipping) */
+  [lang="te"], .telugu-text {
+    line-height: 1.65 !important;
+    font-family: 'Noto Sans Telugu', 'Plus Jakarta Sans', sans-serif;
+  }
+}
+
+/* Custom Tactile Elements and Elevation */
+.card-tactile {
+  background-color: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 1.5rem;
+  box-shadow: 0px 4px 12px rgba(15, 41, 66, 0.06);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.card-tactile:hover {
+  box-shadow: 0px 8px 20px rgba(15, 41, 66, 0.10);
+}
+
+.btn-pill-primary {
+  min-height: 56px;
+  border-radius: 9999px;
+  background-color: #0f2942;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 1.125rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 2rem;
+  transition: all 0.15s ease-in-out;
+  box-shadow: 0px 4px 12px rgba(15, 41, 66, 0.15);
+}
+
+.btn-pill-primary:hover {
+  background-color: #001428;
+  transform: translateY(-1px);
+}
+
+.btn-pill-primary:active {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.btn-pill-secondary {
+  min-height: 56px;
+  border-radius: 9999px;
+  background-color: #0d9488;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 1.125rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.75rem;
+  transition: all 0.15s ease-in-out;
+}
+
+.btn-pill-secondary:hover {
+  background-color: #006a61;
+}
+
+.btn-pill-accent {
+  min-height: 56px;
+  border-radius: 9999px;
+  background-color: #d97706;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 1.125rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.75rem;
+  transition: all 0.15s ease-in-out;
+}
+
+.btn-pill-accent:hover {
+  background-color: #b45309;
+}
+
+.btn-pill-outline {
+  min-height: 56px;
+  border-radius: 9999px;
+  background-color: #ffffff;
+  border: 2px solid #0f2942;
+  color: #0f2942;
+  font-weight: 700;
+  font-size: 1.125rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.75rem;
+  transition: all 0.15s ease-in-out;
+}
+
+.btn-pill-outline:hover {
+  background-color: #eff4ff;
+}
+
+/* Accessible Inputs */
+.input-tactile {
+  min-height: 58px;
+  border-radius: 1rem;
+  border: 2px solid #cbd5e1;
+  background-color: #ffffff;
+  padding: 0.75rem 1.25rem;
+  font-size: 1.125rem;
+  color: #0b1c30;
+  transition: all 0.2s ease;
+}
+
+.input-tactile:focus {
+  outline: none;
+  border-color: #0f2942;
+  box-shadow: 0 0 0 4px rgba(13, 148, 136, 0.15);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
