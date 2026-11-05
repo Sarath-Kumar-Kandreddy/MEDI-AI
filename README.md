@@ -1,4 +1,4 @@
-# Arogya Bandhu (ఆరోగ్య బంధు) - MEDI AI Coastal Andhra Healthcare
+# MEDI-AI | Arogya Bandhu (ఆరోగ్య బంధు) - Coastal Andhra Healthcare
 
 An elder-friendly, bilingual healthcare and civic welfare application tailored for citizens and seniors navigating public healthcare, government welfare schemes, and hospital consultations in **Visakhapatnam, Andhra Pradesh**.
 
